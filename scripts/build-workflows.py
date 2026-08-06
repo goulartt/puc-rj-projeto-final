@@ -44,6 +44,9 @@ PREPARE = """
 const items = $('Chamada de outro fluxo').all();
 const input = items.length ? items[0].json : {{}};
 const role = input.role || 'qa';
+// Quem pediu. Vai ate `llm_calls` para o custo ser atribuivel a uma
+// conversa, e nao so contabilizado em bloco.
+const chatId = input.chatId || input.chat_id || null;
 
 // Diagnostico do que efetivamente chegou ao sub-fluxo. Sem isso, "messages
 // vazio" nao distingue chamador errado de payload malformado.
@@ -56,7 +59,7 @@ let config;
 try {{
   config = resolveConfig(role, $env);
 }} catch (error) {{
-  return [{{ json: {{ allowed: false, blocked_reason: error.message, role, received }} }}];
+  return [{{ json: {{ allowed: false, blocked_reason: error.message, role, chatId, received }} }}];
 }}
 
 const decision = canProceed(config, {{ spentUsd, limitUsd }});
@@ -65,6 +68,7 @@ if (!decision.allowed) {{
     allowed: false,
     blocked_reason: decision.reason,
     role,
+  chatId,
     provider: config.provider,
     model: config.model,
     spent_usd: spentUsd,
@@ -84,12 +88,13 @@ try {{
     structuredMode: input.structuredMode || 'schema',
   }});
 }} catch (error) {{
-  return [{{ json: {{ allowed: false, blocked_reason: error.message, role, received }} }}];
+  return [{{ json: {{ allowed: false, blocked_reason: error.message, role, chatId, received }} }}];
 }}
 
 return [{{ json: {{
   allowed: true,
   role,
+  chatId,
   provider: config.provider,
   model: config.model,
   base_url: config.baseUrl,
@@ -115,6 +120,8 @@ if (raw.error || raw.__httpError) {{
   return [{{ json: {{
     ok: false,
     role: prepared.role,
+  chat_id: prepared.chatId,
+    chatId: prepared.chatId,
     provider: prepared.provider,
     model: prepared.model,
     error: JSON.stringify(raw.error || raw.__httpError).slice(0, 500),
@@ -138,6 +145,7 @@ const parsed = prepared.wants_json ? parseJsonOutput(normalized.text) : null;
 return [{{ json: {{
   ok: !normalized.refusal,
   role: prepared.role,
+  chat_id: prepared.chatId,
   provider: prepared.provider,
   model: normalized.model || prepared.model,
   text: normalized.text,
@@ -168,6 +176,7 @@ return [{ json: {
   blocked: true,
   reason: blocked.blocked_reason,
   role: blocked.role,
+  chat_id: blocked.chatId || null,
   received: blocked.received ?? null,
   spent_usd: blocked.spent_usd ?? null,
   limit_usd: blocked.limit_usd ?? null,
@@ -303,12 +312,12 @@ def build() -> dict:
                 "operation": "executeQuery",
                 "query": (
                     "INSERT INTO llm_calls "
-                    "(role, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd, error) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8);"
+                    "(role, chat_id, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd, error) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);"
                 ),
                 "options": {
                     "queryReplacement": (
-                        "={{ [$json.role, $json.provider, $json.model, $json.usage.input,"
+                        "={{ [$json.role, $json.chat_id, $json.provider, $json.model, $json.usage.input,"
                     " $json.usage.output, $json.usage.cached, $json.cost_usd, $json.error] }}"
                     )
                 },
@@ -981,6 +990,52 @@ return {
 });
 """
 
+
+CHAT_FORMAT_HELPERS = r"""
+// Formatacao das mensagens em HTML, e nao no Markdown legado do Telegram.
+//
+// O Markdown legado quebra com um unico caractere desemparelhado, e a mensagem
+// inteira e recusada com 'Bad request' — a resposta some sem chegar a pessoa e
+// sem erro visivel na conversa. Aconteceu de verdade: a ficha trazia o campo
+// `debts.enforced_claim` na secao de lacunas, e aquele underscore solto
+// derrubou o envio. Como os nomes de campo do schema sao snake_case, a falha
+// era sistematica: quase toda ficha com lacunas quebraria.
+//
+// Em HTML o escape resolve na origem. Escapamos tudo o que e dinamico e so
+// depois envolvemos com as tags que nos mesmos geramos, entao nao ha como
+// produzir marcacao desbalanceada.
+
+function esc(value) {
+  return String(value == null ? '' : value)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function bold(value) { return '<b>' + esc(value) + '</b>'; }
+
+// O modelo responde em Markdown por habito, e em HTML isso apareceria literal
+// como `**negrito**`. Convertemos os poucos casos que ele usa, sempre DEPOIS
+// do escape — os pares abaixo sao gerados aqui e por isso sempre fecham.
+function fromMarkdown(text) {
+  return esc(text)
+    .replace(/^\s*#{1,6}\s*(.+)$/gm, (m, title) => '<b>' + title.trim() + '</b>')
+    .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
+    .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<i>$2</i>')
+    .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+    .replace(/^\s*[-*]\s+/gm, '• ');
+}
+
+// O Telegram corta em 4096 caracteres. Truncar com aviso e melhor que a
+// mensagem sumir; o corte respeita a ultima quebra de linha para nao partir
+// uma tag ao meio.
+function fit(text) {
+  if (text.length <= 3900) return text;
+  const cut = text.slice(0, 3900);
+  const at = cut.lastIndexOf(String.fromCharCode(10));
+  return (at > 3000 ? cut.slice(0, at) : cut) +
+         String.fromCharCode(10, 10) + '<i>(resposta truncada)</i>';
+}
+"""
+
 CHAT_SCOPE_REQUEST = """
 // Manda ao servico so as mensagens que sao pergunta; comando e documento nao
 // passam por escopo.
@@ -1010,13 +1065,14 @@ return $('Rotear mensagem').all().map((entry) => {
 });
 """
 
-CHAT_REFUSAL = """
+CHAT_REFUSAL = CHAT_FORMAT_HELPERS + """
+// A recusa vem de scope.py, e texto nosso e nao tem marcacao — so escapamos.
 return $input.all().map((entry) => ({
-  json: { chat_id: entry.json.chat_id, text: entry.json.refusal },
+  json: { chat_id: entry.json.chat_id, text: esc(entry.json.refusal) },
 }));
 """
 
-CHAT_HELP = """
+CHAT_HELP = CHAT_FORMAT_HELPERS + """
 const chatId = $('Aplicar escopo').all()
   .filter((i) => i.json.route === 'help')[0].json.chat_id;
 
@@ -1024,25 +1080,25 @@ const chatId = $('Aplicar escopo').all()
 // um sistema automatizado, o que acontece com o PDF que ela enviar, e como
 // apagar. Esta em docs/privacy.md e aparece no primeiro contato.
 const text = [
-  '*Arremata AI* — assistente para editais de leilao de imovel.',
+  bold('Arremata AI') + ' — assistente para editais de leilao de imovel.',
   '',
-  'Sou um sistema automatizado, *nao sou advogado* e nao substituo analise',
+  'Sou um sistema automatizado, ' + bold('nao sou advogado') + ' e nao substituo analise',
   'juridica. Explico termos, prazos e riscos do edital, e mostro de onde',
   'tirei cada resposta.',
   '',
-  '*Como usar*',
+  bold('Como usar'),
   'Envie o PDF do edital e eu monto uma ficha com prazos, valores, onus,',
-  'debitos e o que o documento _nao_ informa. Depois pergunte o que quiser',
+  'debitos e o que o documento <i>nao</i> informa. Depois pergunte o que quiser',
   'sobre ele, em portugues normal. Sem edital carregado, respondo duvidas',
   'gerais de leilao.',
   '',
-  '*O que faco com seus dados*',
+  bold('O que faco com seus dados'),
   'Guardo o texto do edital e a ficha para responder suas perguntas. A',
   'extracao usa um modelo de terceiro. CPF que apareca no documento e',
   'mascarado antes de qualquer coisa ser gravada.',
   'Use /apagar para remover tudo desta conversa.',
   '',
-  '*O que nao faco*',
+  bold('O que nao faco'),
   'Nao digo se vale a pena arrematar, nao estimo valor de mercado e nao dou',
   'orientacao juridica.',
 ].join(String.fromCharCode(10));
@@ -1094,6 +1150,7 @@ if (contexts.length && contexts[0].has_notice) {
 const system = parts.join(String.fromCharCode(10));
 return contexts.map((context) => ({ json: {
   role: 'qa',
+  chatId: context.chat_id,
   system,
   cacheSystem: true,
   maxTokens: Number($env.LLM_QA_MAX_TOKENS || 8192),
@@ -1101,7 +1158,7 @@ return contexts.map((context) => ({ json: {
 } }));
 """
 
-CHAT_ANSWER = """
+CHAT_ANSWER = CHAT_FORMAT_HELPERS + """
 // Pareado com `Montar contexto`, que esta no mesmo ramo e tem os mesmos itens
 // na mesma ordem. Referenciar o roteador seria errado: `.first()` la traria o
 // primeiro item de todos os ramos, nao o desta pergunta.
@@ -1111,24 +1168,20 @@ return $input.all().map((item, index) => {
   const gateway = item.json;
   let text;
   if (gateway.blocked) {
-    text = 'Nao consegui responder agora: ' + (gateway.reason || 'limite de uso atingido') +
-           '. Tente de novo mais tarde.';
+    text = esc('Nao consegui responder agora: ' + (gateway.reason || 'limite de uso atingido') +
+               '. Tente de novo mais tarde.');
   } else if (!gateway.text) {
     text = 'Nao consegui formular uma resposta para isso. Pode reformular a pergunta?';
   } else {
-    text = gateway.text;
+    // O modelo escreve em Markdown; sem converter, apareceria `**assim**`.
+    text = fromMarkdown(gateway.text);
   }
 
-  // O Telegram corta em 4096 caracteres; truncar com aviso e melhor que a
-  // mensagem sumir sem explicacao.
-  const NL = String.fromCharCode(10);
-  if (text.length > 3900) text = text.slice(0, 3900) + NL + NL + '_(resposta truncada)_';
-
-  return { json: { chat_id: (contexts[index] || contexts[0]).chat_id, text } };
+  return { json: { chat_id: (contexts[index] || contexts[0]).chat_id, text: fit(text) } };
 });
 """
 
-CHAT_INGEST_REPLY = """
+CHAT_INGEST_REPLY = CHAT_FORMAT_HELPERS + """
 const result = $input.first().json;
 // Uma mensagem do Telegram carrega no maximo um documento, entao ha exatamente
 // um item nesta rota.
@@ -1139,14 +1192,14 @@ const NL = String.fromCharCode(10);
 if (!result.ok) {
   const problems = (result.problems || []).join('; ');
   return [{ json: { chat_id: routed.chat_id, text:
-    'Nao consegui analisar este edital.' + NL + NL + (problems || 'causa desconhecida') + NL + NL +
-    'Se o PDF for digitalizado, a leitura pode falhar. Tente outro arquivo.' } }];
+    'Nao consegui analisar este edital.' + NL + NL + esc(problems || 'causa desconhecida') +
+    NL + NL + 'Se o PDF for digitalizado, a leitura pode falhar. Tente outro arquivo.' } }];
 }
 
 const a = result.analysis || {};
 const brl = (n) => (n == null ? null
   : n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }));
-const line = (label, value) => (value ? '*' + label + ':* ' + value : null);
+const line = (label, value) => (value ? bold(label + ':') + ' ' + esc(value) : null);
 
 const occupancy = {
   occupied: 'ocupado', vacant: 'desocupado', not_informed: 'NAO INFORMADO no edital',
@@ -1157,7 +1210,7 @@ const gaps = (a.gaps || []).slice(0, 3);
 const appraisal = a.appraisal || {};
 
 const out = [
-  '*Ficha do edital* — ' + (routed.file_name || 'documento'),
+  bold('Ficha do edital') + ' — ' + esc(routed.file_name || 'documento'),
   '',
   line('Imovel', ((a.property || {}).type || {}).value),
   line('Matricula', ((a.property || {}).registry_number || {}).value),
@@ -1169,21 +1222,21 @@ const out = [
 ].filter((l) => l !== null);
 
 if (risks.length) {
-  out.push('*Riscos de maior peso*');
-  risks.forEach((r) => out.push('• ' + r.description));
+  out.push(bold('Riscos de maior peso'));
+  risks.forEach((r) => out.push('• ' + esc(r.description)));
   out.push('');
 }
 if (gaps.length) {
-  out.push('*O que o edital NAO informa*');
-  gaps.forEach((g) => out.push('• ' + g.field + ' — ' + g.why_it_matters));
+  out.push(bold('O que o edital NAO informa'));
+  // `g.field` vem do schema em snake_case — e exatamente o valor que derrubava
+  // o envio no Markdown legado.
+  gaps.forEach((g) => out.push('• ' + esc(g.field) + ' — ' + esc(g.why_it_matters)));
   out.push('');
 }
 out.push('Pergunte o que quiser sobre este edital. Nao sou advogado e nao digo se',
          'vale a pena arrematar.');
 
-let text = out.join(NL);
-if (text.length > 3900) text = text.slice(0, 3900) + NL + NL + '_(resposta truncada)_';
-return [{ json: { chat_id: routed.chat_id, text } }];
+return [{ json: { chat_id: routed.chat_id, text: fit(out.join(NL)) } }];
 """
 
 CHAT_FORGET_REPLY = """
@@ -1209,7 +1262,9 @@ def _telegram_send(name: str, position: list[int]) -> dict:
     return node(name, "n8n-nodes-base.telegram", 1.2, position, {
         "chatId": "={{ $json.chat_id }}",
         "text": "={{ $json.text }}",
-        "additionalFields": {"parse_mode": "Markdown", "appendAttribution": False},
+        # HTML, e nao Markdown: no Markdown legado um unico caractere
+        # desemparelhado faz o Telegram recusar a mensagem inteira.
+        "additionalFields": {"parse_mode": "HTML", "appendAttribution": False},
     }, credentials=TELEGRAM_CRED)
 
 

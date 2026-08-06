@@ -82,6 +82,26 @@ services:
       # URL publica do tunel: e a base do webhook que o Telegram chama.
       N8N_WEBHOOK_URL: ${WEBHOOK_URL}
 
+      # PDF vai para disco em vez de virar base64 dentro da execucao. Com o
+      # modo padrao (memoria), cada edital enviado e embutido no historico de
+      # execucao e no banco do n8n: infla o arquivo, atrasa o carregamento da
+      # UI e, com PDF grande, e a causa plausivel de um estouro de memoria de
+      # verdade — diferente do "out of memory" generico que o n8n mostra para
+      # toda execucao interrompida.
+      N8N_DEFAULT_BINARY_DATA_MODE: filesystem
+
+      # Historico limitado. Sem poda ele cresce sem fim, e cada edital deixa
+      # markdown e ficha em varias copias — uma por no que os tocou.
+      EXECUTIONS_DATA_PRUNE: "true"
+      EXECUTIONS_DATA_MAX_AGE: "336"          # 14 dias
+      EXECUTIONS_DATA_PRUNE_MAX_COUNT: "500"
+
+      # A extracao leva ~4 minutos com o edital de exemplo. O teto e generoso
+      # de proposito: cortar uma extracao pela metade gasta o token e nao
+      # entrega ficha.
+      EXECUTIONS_TIMEOUT: "1800"
+      EXECUTIONS_TIMEOUT_MAX: "3600"
+
       # Deixa os fluxos lerem process.env — é assim que o gateway troca de
       # provider sem editar workflow. Sem isso, a abstração não funciona.
       N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"

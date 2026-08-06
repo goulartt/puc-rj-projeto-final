@@ -36,6 +36,8 @@ em aberto e recusa as perguntas cuja resposta seria um palpite caro.
 ```bash
 cp .env.example .env      # preencha as chaves
 docker compose up -d
+# abra http://localhost:5678 e crie a conta de dono ANTES de publicar o túnel:
+# ele expõe o editor inteiro, não só o webhook
 ./scripts/expose-bot.sh   # publica o webhook do Telegram
 ```
 
@@ -186,6 +188,7 @@ roteamento, escopo e gateway idênticos aos de produção.
 
 ## Documentação
 
+- [`docs/operations.md`](docs/operations.md) — endereços, logs, custo por conversa, troca de modelo
 - [`docs/architecture.md`](docs/architecture.md) — decisões e o porquê de cada uma
 - [`docs/domain.md`](docs/domain.md) — pessoa, momento, evidência, acerto
 - [`docs/privacy.md`](docs/privacy.md) — dado pessoal, LGPD, limites de coleta

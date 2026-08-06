@@ -32,6 +32,10 @@ CREATE TABLE IF NOT EXISTS case_lookups (
 CREATE TABLE IF NOT EXISTS llm_calls (
     id            BIGSERIAL PRIMARY KEY,
     role          TEXT          NOT NULL,  -- 'extraction' | 'qa'
+    -- Conversa que originou a chamada. Sem isto da para saber quanto se gastou,
+    -- mas nao com quem — e uma pergunta cara de um usuario fica indistinguivel
+    -- do uso normal de outro.
+    chat_id       TEXT,
     provider      TEXT          NOT NULL,  -- 'anthropic' | 'openai'
     model         TEXT          NOT NULL,
     input_tokens  INTEGER       NOT NULL DEFAULT 0,
@@ -54,6 +58,18 @@ CREATE OR REPLACE VIEW budget_spent AS
       FROM llm_calls;
 
 -- Taxa de erro por modelo, para a avaliação da Fase 7.
+-- Uso por conversa: quantas chamadas, quanto custou, quando foi a ultima.
+CREATE OR REPLACE VIEW usage_by_chat AS
+    SELECT chat_id,
+           count(*)                                  AS calls,
+           count(*) FILTER (WHERE error IS NOT NULL) AS failures,
+           round(SUM(cost_usd), 6)                   AS cost_usd,
+           max(created_at)                           AS last_call
+      FROM llm_calls
+     WHERE chat_id IS NOT NULL
+     GROUP BY chat_id
+     ORDER BY cost_usd DESC;
+
 CREATE OR REPLACE VIEW llm_call_health AS
     SELECT provider, model,
            count(*)                                  AS calls,
