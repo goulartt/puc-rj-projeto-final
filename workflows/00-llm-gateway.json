@@ -1,0 +1,261 @@
+{
+  "id": "llmgateway0000001",
+  "name": "00 - Gateway de modelo",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "chamada-de-outro-fluxo",
+      "name": "Chamada de outro fluxo",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT total_usd FROM budget_spent;",
+        "options": {}
+      },
+      "id": "consultar-gasto",
+      "name": "Consultar gasto",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        200,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "leilao-postgres",
+          "name": "Postgres do projeto"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// ─── Gerado por scripts/build-workflows.py — não edite aqui ────────────────\n/**\n * Gateway de modelo — lógica pura, sem I/O.\n *\n * Todo fluxo do n8n chama o LLM por aqui, e nunca fala com provedor direto.\n * O nó nativo de chat model do n8n não serve: ele esconde `cache_control`,\n * `thinking` e structured output, que são exatamente os controles de custo e\n * de contrato deste projeto.\n *\n * O trabalho real não é trocar URL — é normalizar as três coisas que diferem\n * de verdade entre provedores: onde vai o system prompt, como se pede saída\n * estruturada, e o formato do `usage`. É a normalização de `usage` que permite\n * contabilizar custo e aplicar o teto de orçamento independentemente de quem\n * atendeu a chamada.\n *\n * Este arquivo é a fonte da verdade. `scripts/build-workflows.py` o embute no\n * nó de código de `workflows/00-llm-gateway.json`, porque o n8n não consegue\n * importar arquivo local. Editar o JSON à mão faz o próximo build sobrescrever.\n */\n\n\nconst ANTHROPIC = 'anthropic';\nconst OPENAI = 'openai';\n\n/**\n * Preço por milhão de tokens, em USD. Conferido em 05/08/2026.\n *\n * Só entram modelos cujo preço foi verificado. Modelo ausente da tabela não\n * vira custo zero: vira `costKnown: false`, para o teto de orçamento não ser\n * furado em silêncio por um modelo que ninguém precificou.\n */\nconst PRICING = {\n  'claude-opus-5': { input: 5, output: 25 },\n  'claude-opus-4-8': { input: 5, output: 25 },\n  'claude-sonnet-5': { input: 3, output: 15 },\n  'claude-haiku-4-5': { input: 1, output: 5 },\n};\n\n/** Leitura em cache custa ~10% da entrada; ver docs de prompt caching. */\nconst CACHE_READ_MULTIPLIER = 0.1;\n\n/** Endereços que caracterizam modelo local — custo real zero. */\nconst LOCAL_HOSTS = ['localhost', '127.0.0.1', '::1', 'host.docker.internal', 'ollama'];\n\n/**\n * Extrai o host de uma URL sem depender do global `URL`.\n *\n * O sandbox do nó de código do n8n não expõe `URL`. Uma versão anterior usava\n * `new URL()` dentro de try/catch: o ReferenceError era engolido, todo endereço\n * virava \"remoto\", e o Ollama local passou a ser barrado como modelo pago sem\n * preço. Regex não tem essa dependência.\n */\nfunction hostOf(baseUrl) {\n  const match = /^[a-z][a-z0-9+.-]*:\\/\\/(?:[^@/]*@)?(\\[[^\\]]+\\]|[^:/?#]+)/i.exec(\n    String(baseUrl || '').trim(),\n  );\n  if (!match) return '';\n  return match[1].replace(/^\\[|\\]$/g, '').toLowerCase();\n}\n\nfunction isLocal(baseUrl) {\n  return LOCAL_HOSTS.includes(hostOf(baseUrl));\n}\n\n/**\n * Resolve a configuração de um papel a partir das variáveis de ambiente.\n *\n * `role` é `extraction` (Estágio 1, caro, roda uma vez por edital) ou `qa`\n * (Estágio 3, barato, roda a cada pergunta). Trocar o provedor de um estágio\n * é mexer só nestas variáveis — nenhum fluxo precisa saber quem atende.\n */\nfunction resolveConfig(role, env) {\n  const prefix = `LLM_${role.toUpperCase()}_`;\n  const provider = (env[`${prefix}PROVIDER`] || '').trim().toLowerCase();\n\n  if (provider !== ANTHROPIC && provider !== OPENAI) {\n    throw new Error(\n      `${prefix}PROVIDER invalido: ${JSON.stringify(provider)}. Use \"${ANTHROPIC}\" ou \"${OPENAI}\".`,\n    );\n  }\n\n  const model = (env[`${prefix}MODEL`] || '').trim();\n  const baseUrl = (env[`${prefix}BASE_URL`] || '').trim().replace(/\\/+$/, '');\n  if (!model) throw new Error(`${prefix}MODEL nao definido.`);\n  if (!baseUrl) throw new Error(`${prefix}BASE_URL nao definido.`);\n\n  return { role, provider, model, baseUrl, apiKey: env[`${prefix}API_KEY`] || '' };\n}\n\n/**\n * Monta a requisição HTTP do provedor.\n *\n * `system` é string única; `messages` é [{role, content}]. `schema` opcional\n * pede saída estruturada. `cacheSystem` marca o bloco de sistema para cache —\n * é o que torna barato repetir o mesmo edital em perguntas seguintes.\n */\nfunction buildRequest(config, { system, messages, schema, maxTokens = 4096, cacheSystem = false }) {\n  if (!Array.isArray(messages) || messages.length === 0) {\n    throw new Error('messages vazio.');\n  }\n\n  if (config.provider === ANTHROPIC) {\n    const body = {\n      model: config.model,\n      max_tokens: maxTokens,\n      messages,\n    };\n\n    if (system) {\n      // Bloco separado, não primeira mensagem — é assim na Messages API.\n      const block = { type: 'text', text: system };\n      if (cacheSystem) block.cache_control = { type: 'ephemeral' };\n      body.system = [block];\n    }\n    if (schema) {\n      body.output_config = { format: { type: 'json_schema', schema } };\n    }\n\n    return {\n      url: `${config.baseUrl}/v1/messages`,\n      headers: {\n        'content-type': 'application/json',\n        'x-api-key': config.apiKey,\n        'anthropic-version': '2023-06-01',\n      },\n      body,\n    };\n  }\n\n  // OPENAI: cobre Ollama, OpenRouter, Together, Groq, vLLM.\n  const body = {\n    model: config.model,\n    max_tokens: maxTokens,\n    // System vira a primeira mensagem, não campo separado.\n    messages: system ? [{ role: 'system', content: system }, ...messages] : messages,\n  };\n\n  if (schema) {\n    body.response_format = {\n      type: 'json_schema',\n      json_schema: { name: 'output', strict: true, schema },\n    };\n  }\n  // `cacheSystem` não tem equivalente aqui e é ignorado de propósito: o\n  // caminho OpenAI-compat não expõe controle de cache.\n\n  return {\n    url: `${config.baseUrl}/v1/chat/completions`,\n    headers: {\n      'content-type': 'application/json',\n      authorization: `Bearer ${config.apiKey}`,\n    },\n    body,\n  };\n}\n\n/** Junta os blocos de texto de uma resposta da Messages API. */\nfunction anthropicText(content) {\n  if (!Array.isArray(content)) return '';\n  return content\n    .filter((block) => block && block.type === 'text' && typeof block.text === 'string')\n    .map((block) => block.text)\n    .join('');\n}\n\n/**\n * Normaliza a resposta para um formato único.\n *\n * Devolve sempre {text, parsed, usage:{input,output,cached}, finishReason,\n * refusal}. `parsed` só vem quando havia schema e o texto era JSON válido —\n * texto que não parseia devolve parsed null em vez de estourar, para o fluxo\n * chamador decidir o que fazer.\n */\nfunction normalizeResponse(provider, raw) {\n  if (provider === ANTHROPIC) {\n    const usage = raw.usage || {};\n    return {\n      text: anthropicText(raw.content),\n      parsed: null,\n      usage: {\n        input: usage.input_tokens || 0,\n        output: usage.output_tokens || 0,\n        cached: usage.cache_read_input_tokens || 0,\n      },\n      finishReason: raw.stop_reason || null,\n      // Classificador de segurança pode recusar com HTTP 200. Ler content\n      // sem checar isso produziria uma ficha vazia sem explicação.\n      refusal: raw.stop_reason === 'refusal',\n      model: raw.model || null,\n    };\n  }\n\n  const choice = (raw.choices && raw.choices[0]) || {};\n  const usage = raw.usage || {};\n  return {\n    text: (choice.message && choice.message.content) || '',\n    parsed: null,\n    usage: {\n      input: usage.prompt_tokens || 0,\n      output: usage.completion_tokens || 0,\n      cached: (usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens) || 0,\n    },\n    finishReason: choice.finish_reason || null,\n    refusal: false,\n    model: raw.model || null,\n  };\n}\n\n/** Tenta parsear a saída como JSON, tolerando cerca de bloco de código. */\nfunction parseJsonOutput(text) {\n  if (typeof text !== 'string' || !text.trim()) return null;\n  const cleaned = text.trim().replace(/^```(?:json)?\\s*/i, '').replace(/\\s*```$/, '');\n  try {\n    return JSON.parse(cleaned);\n  } catch {\n    return null;\n  }\n}\n\n/**\n * Custo em USD da chamada.\n *\n * Modelo local custa zero de verdade. Modelo remoto fora da tabela devolve\n * `known: false` — o chamador precisa saber que o valor é incerto, senão o\n * teto de orçamento vira ficção.\n */\nfunction computeCost(config, usage) {\n  if (isLocal(config.baseUrl)) {\n    return { usd: 0, known: true, reason: 'modelo local' };\n  }\n\n  const price = PRICING[config.model];\n  if (!price) {\n    return { usd: 0, known: false, reason: `preco desconhecido para ${config.model}` };\n  }\n\n  const uncachedInput = Math.max(0, (usage.input || 0) - (usage.cached || 0));\n  const usd =\n    (uncachedInput * price.input +\n      (usage.cached || 0) * price.input * CACHE_READ_MULTIPLIER +\n      (usage.output || 0) * price.output) /\n    1e6;\n\n  return { usd: Number(usd.toFixed(6)), known: true, reason: null };\n}\n\n/**\n * Decide, **antes** de chamar, se a chamada pode prosseguir.\n *\n * A decisão não pode depender do custo da própria chamada: esse número só\n * existe depois da resposta. O que dá para saber de antemão é se o modelo é\n * local, se ele tem preço conhecido, e quanto já foi gasto.\n *\n * Modelo remoto sem preço na tabela é barrado. Deixar passar transformaria o\n * teto em ficção — gastaria de verdade e contabilizaria zero.\n */\nfunction canProceed(config, { spentUsd, limitUsd }) {\n  if (isLocal(config.baseUrl)) {\n    return { allowed: true, reason: null, billable: false };\n  }\n  if (!PRICING[config.model]) {\n    return {\n      allowed: false,\n      billable: true,\n      reason:\n        `modelo remoto sem preco conhecido: ${config.model}. ` +\n        `Adicione a PRICING em services/gateway/gateway.js antes de usar, ` +\n        `senao o teto de orcamento nao consegue contabilizar o gasto.`,\n    };\n  }\n  if (spentUsd >= limitUsd) {\n    return {\n      allowed: false,\n      billable: true,\n      reason: `teto de orcamento atingido: US$ ${spentUsd.toFixed(4)} de US$ ${limitUsd.toFixed(2)}`,\n    };\n  }\n  return { allowed: true, reason: null, billable: true };\n}\n// ─── Fim da biblioteca embutida ────────────────────────────────────────────\n\n// Lê do gatilho pelo nome, e nao de $input: a consulta de orcamento fica entre\n// os dois, e $input sempre aponta para o no imediatamente anterior — que aqui\n// devolveria {total_usd} em vez da carga do chamador.\nconst items = $('Chamada de outro fluxo').all();\nconst input = items.length ? items[0].json : {};\nconst role = input.role || 'qa';\n\n// Diagnostico do que efetivamente chegou ao sub-fluxo. Sem isso, \"messages\n// vazio\" nao distingue chamador errado de payload malformado.\nconst received = { item_count: items.length, keys: Object.keys(input) };\n\nconst spentUsd = Number($('Consultar gasto').first().json.total_usd || 0);\nconst limitUsd = Number($env.BUDGET_USD_LIMIT || 0);\n\nlet config;\ntry {\n  config = resolveConfig(role, $env);\n} catch (error) {\n  return [{ json: { allowed: false, blocked_reason: error.message, role, received } }];\n}\n\nconst decision = canProceed(config, { spentUsd, limitUsd });\nif (!decision.allowed) {\n  return [{ json: {\n    allowed: false,\n    blocked_reason: decision.reason,\n    role,\n    provider: config.provider,\n    model: config.model,\n    spent_usd: spentUsd,\n    limit_usd: limitUsd,\n    received,\n  } }];\n}\n\nlet request;\ntry {\n  request = buildRequest(config, {\n    system: input.system,\n    messages: input.messages,\n    schema: input.schema,\n    maxTokens: input.maxTokens || 4096,\n    cacheSystem: Boolean(input.cacheSystem),\n  });\n} catch (error) {\n  return [{ json: { allowed: false, blocked_reason: error.message, role, received } }];\n}\n\nreturn [{ json: {\n  allowed: true,\n  role,\n  provider: config.provider,\n  model: config.model,\n  base_url: config.baseUrl,\n  billable: decision.billable,\n  url: request.url,\n  headers: request.headers,\n  body: request.body,\n  wants_json: Boolean(input.schema),\n} }];\n"
+      },
+      "id": "preparar-chamada",
+      "name": "Preparar chamada",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "allowed",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.allowed }}",
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "orcamento-permite?",
+      "name": "Orcamento permite?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        600,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ JSON.stringify($json.headers) }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.body) }}",
+        "options": {
+          "timeout": 600000
+        }
+      },
+      "id": "chamar-provedor",
+      "name": "Chamar provedor",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        820,
+        -110
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// ─── Gerado por scripts/build-workflows.py — não edite aqui ────────────────\n/**\n * Gateway de modelo — lógica pura, sem I/O.\n *\n * Todo fluxo do n8n chama o LLM por aqui, e nunca fala com provedor direto.\n * O nó nativo de chat model do n8n não serve: ele esconde `cache_control`,\n * `thinking` e structured output, que são exatamente os controles de custo e\n * de contrato deste projeto.\n *\n * O trabalho real não é trocar URL — é normalizar as três coisas que diferem\n * de verdade entre provedores: onde vai o system prompt, como se pede saída\n * estruturada, e o formato do `usage`. É a normalização de `usage` que permite\n * contabilizar custo e aplicar o teto de orçamento independentemente de quem\n * atendeu a chamada.\n *\n * Este arquivo é a fonte da verdade. `scripts/build-workflows.py` o embute no\n * nó de código de `workflows/00-llm-gateway.json`, porque o n8n não consegue\n * importar arquivo local. Editar o JSON à mão faz o próximo build sobrescrever.\n */\n\n\nconst ANTHROPIC = 'anthropic';\nconst OPENAI = 'openai';\n\n/**\n * Preço por milhão de tokens, em USD. Conferido em 05/08/2026.\n *\n * Só entram modelos cujo preço foi verificado. Modelo ausente da tabela não\n * vira custo zero: vira `costKnown: false`, para o teto de orçamento não ser\n * furado em silêncio por um modelo que ninguém precificou.\n */\nconst PRICING = {\n  'claude-opus-5': { input: 5, output: 25 },\n  'claude-opus-4-8': { input: 5, output: 25 },\n  'claude-sonnet-5': { input: 3, output: 15 },\n  'claude-haiku-4-5': { input: 1, output: 5 },\n};\n\n/** Leitura em cache custa ~10% da entrada; ver docs de prompt caching. */\nconst CACHE_READ_MULTIPLIER = 0.1;\n\n/** Endereços que caracterizam modelo local — custo real zero. */\nconst LOCAL_HOSTS = ['localhost', '127.0.0.1', '::1', 'host.docker.internal', 'ollama'];\n\n/**\n * Extrai o host de uma URL sem depender do global `URL`.\n *\n * O sandbox do nó de código do n8n não expõe `URL`. Uma versão anterior usava\n * `new URL()` dentro de try/catch: o ReferenceError era engolido, todo endereço\n * virava \"remoto\", e o Ollama local passou a ser barrado como modelo pago sem\n * preço. Regex não tem essa dependência.\n */\nfunction hostOf(baseUrl) {\n  const match = /^[a-z][a-z0-9+.-]*:\\/\\/(?:[^@/]*@)?(\\[[^\\]]+\\]|[^:/?#]+)/i.exec(\n    String(baseUrl || '').trim(),\n  );\n  if (!match) return '';\n  return match[1].replace(/^\\[|\\]$/g, '').toLowerCase();\n}\n\nfunction isLocal(baseUrl) {\n  return LOCAL_HOSTS.includes(hostOf(baseUrl));\n}\n\n/**\n * Resolve a configuração de um papel a partir das variáveis de ambiente.\n *\n * `role` é `extraction` (Estágio 1, caro, roda uma vez por edital) ou `qa`\n * (Estágio 3, barato, roda a cada pergunta). Trocar o provedor de um estágio\n * é mexer só nestas variáveis — nenhum fluxo precisa saber quem atende.\n */\nfunction resolveConfig(role, env) {\n  const prefix = `LLM_${role.toUpperCase()}_`;\n  const provider = (env[`${prefix}PROVIDER`] || '').trim().toLowerCase();\n\n  if (provider !== ANTHROPIC && provider !== OPENAI) {\n    throw new Error(\n      `${prefix}PROVIDER invalido: ${JSON.stringify(provider)}. Use \"${ANTHROPIC}\" ou \"${OPENAI}\".`,\n    );\n  }\n\n  const model = (env[`${prefix}MODEL`] || '').trim();\n  const baseUrl = (env[`${prefix}BASE_URL`] || '').trim().replace(/\\/+$/, '');\n  if (!model) throw new Error(`${prefix}MODEL nao definido.`);\n  if (!baseUrl) throw new Error(`${prefix}BASE_URL nao definido.`);\n\n  return { role, provider, model, baseUrl, apiKey: env[`${prefix}API_KEY`] || '' };\n}\n\n/**\n * Monta a requisição HTTP do provedor.\n *\n * `system` é string única; `messages` é [{role, content}]. `schema` opcional\n * pede saída estruturada. `cacheSystem` marca o bloco de sistema para cache —\n * é o que torna barato repetir o mesmo edital em perguntas seguintes.\n */\nfunction buildRequest(config, { system, messages, schema, maxTokens = 4096, cacheSystem = false }) {\n  if (!Array.isArray(messages) || messages.length === 0) {\n    throw new Error('messages vazio.');\n  }\n\n  if (config.provider === ANTHROPIC) {\n    const body = {\n      model: config.model,\n      max_tokens: maxTokens,\n      messages,\n    };\n\n    if (system) {\n      // Bloco separado, não primeira mensagem — é assim na Messages API.\n      const block = { type: 'text', text: system };\n      if (cacheSystem) block.cache_control = { type: 'ephemeral' };\n      body.system = [block];\n    }\n    if (schema) {\n      body.output_config = { format: { type: 'json_schema', schema } };\n    }\n\n    return {\n      url: `${config.baseUrl}/v1/messages`,\n      headers: {\n        'content-type': 'application/json',\n        'x-api-key': config.apiKey,\n        'anthropic-version': '2023-06-01',\n      },\n      body,\n    };\n  }\n\n  // OPENAI: cobre Ollama, OpenRouter, Together, Groq, vLLM.\n  const body = {\n    model: config.model,\n    max_tokens: maxTokens,\n    // System vira a primeira mensagem, não campo separado.\n    messages: system ? [{ role: 'system', content: system }, ...messages] : messages,\n  };\n\n  if (schema) {\n    body.response_format = {\n      type: 'json_schema',\n      json_schema: { name: 'output', strict: true, schema },\n    };\n  }\n  // `cacheSystem` não tem equivalente aqui e é ignorado de propósito: o\n  // caminho OpenAI-compat não expõe controle de cache.\n\n  return {\n    url: `${config.baseUrl}/v1/chat/completions`,\n    headers: {\n      'content-type': 'application/json',\n      authorization: `Bearer ${config.apiKey}`,\n    },\n    body,\n  };\n}\n\n/** Junta os blocos de texto de uma resposta da Messages API. */\nfunction anthropicText(content) {\n  if (!Array.isArray(content)) return '';\n  return content\n    .filter((block) => block && block.type === 'text' && typeof block.text === 'string')\n    .map((block) => block.text)\n    .join('');\n}\n\n/**\n * Normaliza a resposta para um formato único.\n *\n * Devolve sempre {text, parsed, usage:{input,output,cached}, finishReason,\n * refusal}. `parsed` só vem quando havia schema e o texto era JSON válido —\n * texto que não parseia devolve parsed null em vez de estourar, para o fluxo\n * chamador decidir o que fazer.\n */\nfunction normalizeResponse(provider, raw) {\n  if (provider === ANTHROPIC) {\n    const usage = raw.usage || {};\n    return {\n      text: anthropicText(raw.content),\n      parsed: null,\n      usage: {\n        input: usage.input_tokens || 0,\n        output: usage.output_tokens || 0,\n        cached: usage.cache_read_input_tokens || 0,\n      },\n      finishReason: raw.stop_reason || null,\n      // Classificador de segurança pode recusar com HTTP 200. Ler content\n      // sem checar isso produziria uma ficha vazia sem explicação.\n      refusal: raw.stop_reason === 'refusal',\n      model: raw.model || null,\n    };\n  }\n\n  const choice = (raw.choices && raw.choices[0]) || {};\n  const usage = raw.usage || {};\n  return {\n    text: (choice.message && choice.message.content) || '',\n    parsed: null,\n    usage: {\n      input: usage.prompt_tokens || 0,\n      output: usage.completion_tokens || 0,\n      cached: (usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens) || 0,\n    },\n    finishReason: choice.finish_reason || null,\n    refusal: false,\n    model: raw.model || null,\n  };\n}\n\n/** Tenta parsear a saída como JSON, tolerando cerca de bloco de código. */\nfunction parseJsonOutput(text) {\n  if (typeof text !== 'string' || !text.trim()) return null;\n  const cleaned = text.trim().replace(/^```(?:json)?\\s*/i, '').replace(/\\s*```$/, '');\n  try {\n    return JSON.parse(cleaned);\n  } catch {\n    return null;\n  }\n}\n\n/**\n * Custo em USD da chamada.\n *\n * Modelo local custa zero de verdade. Modelo remoto fora da tabela devolve\n * `known: false` — o chamador precisa saber que o valor é incerto, senão o\n * teto de orçamento vira ficção.\n */\nfunction computeCost(config, usage) {\n  if (isLocal(config.baseUrl)) {\n    return { usd: 0, known: true, reason: 'modelo local' };\n  }\n\n  const price = PRICING[config.model];\n  if (!price) {\n    return { usd: 0, known: false, reason: `preco desconhecido para ${config.model}` };\n  }\n\n  const uncachedInput = Math.max(0, (usage.input || 0) - (usage.cached || 0));\n  const usd =\n    (uncachedInput * price.input +\n      (usage.cached || 0) * price.input * CACHE_READ_MULTIPLIER +\n      (usage.output || 0) * price.output) /\n    1e6;\n\n  return { usd: Number(usd.toFixed(6)), known: true, reason: null };\n}\n\n/**\n * Decide, **antes** de chamar, se a chamada pode prosseguir.\n *\n * A decisão não pode depender do custo da própria chamada: esse número só\n * existe depois da resposta. O que dá para saber de antemão é se o modelo é\n * local, se ele tem preço conhecido, e quanto já foi gasto.\n *\n * Modelo remoto sem preço na tabela é barrado. Deixar passar transformaria o\n * teto em ficção — gastaria de verdade e contabilizaria zero.\n */\nfunction canProceed(config, { spentUsd, limitUsd }) {\n  if (isLocal(config.baseUrl)) {\n    return { allowed: true, reason: null, billable: false };\n  }\n  if (!PRICING[config.model]) {\n    return {\n      allowed: false,\n      billable: true,\n      reason:\n        `modelo remoto sem preco conhecido: ${config.model}. ` +\n        `Adicione a PRICING em services/gateway/gateway.js antes de usar, ` +\n        `senao o teto de orcamento nao consegue contabilizar o gasto.`,\n    };\n  }\n  if (spentUsd >= limitUsd) {\n    return {\n      allowed: false,\n      billable: true,\n      reason: `teto de orcamento atingido: US$ ${spentUsd.toFixed(4)} de US$ ${limitUsd.toFixed(2)}`,\n    };\n  }\n  return { allowed: true, reason: null, billable: true };\n}\n// ─── Fim da biblioteca embutida ────────────────────────────────────────────\n\nconst prepared = $('Preparar chamada').first().json;\nconst raw = $input.first().json;\n\n// O nó HTTP está em continueRegularOutput: erro do provedor chega como dado,\n// não como exceção, para o custo ainda ser registrado e a causa ser devolvida.\nif (raw.error || raw.__httpError) {\n  return [{ json: {\n    ok: false,\n    role: prepared.role,\n    provider: prepared.provider,\n    model: prepared.model,\n    error: JSON.stringify(raw.error || raw.__httpError).slice(0, 500),\n    usage: { input: 0, output: 0, cached: 0 },\n    cost_usd: 0,\n  } }];\n}\n\nconst config = {\n  provider: prepared.provider,\n  model: prepared.model,\n  baseUrl: prepared.base_url,\n};\n\nconst normalized = normalizeResponse(prepared.provider, raw);\nconst cost = computeCost(config, normalized.usage);\nconst parsed = prepared.wants_json ? parseJsonOutput(normalized.text) : null;\n\nreturn [{ json: {\n  ok: !normalized.refusal,\n  role: prepared.role,\n  provider: prepared.provider,\n  model: normalized.model || prepared.model,\n  text: normalized.text,\n  parsed,\n  // Pedimos JSON e não veio JSON: o chamador precisa saber, senão persiste vazio.\n  parse_failed: prepared.wants_json && parsed === null,\n  refusal: normalized.refusal,\n  finish_reason: normalized.finishReason,\n  usage: normalized.usage,\n  cost_usd: cost.usd,\n  cost_known: cost.known,\n  billable: prepared.billable,\n} }];\n"
+      },
+      "id": "normalizar-e-precificar",
+      "name": "Normalizar e precificar",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1040,
+        -110
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO llm_calls (role, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd) VALUES ($1, $2, $3, $4, $5, $6, $7);",
+        "options": {
+          "queryReplacement": "={{ $json.role }},={{ $json.provider }},={{ $json.model }},={{ $json.usage.input }},={{ $json.usage.output }},={{ $json.usage.cached }},={{ $json.cost_usd }}"
+        }
+      },
+      "id": "registrar-custo",
+      "name": "Registrar custo",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        1260,
+        -110
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "leilao-postgres",
+          "name": "Postgres do projeto"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// O ultimo no da cadeia e quem responde ao chamador. Sem este passo o gateway\n// devolveria o resultado do INSERT ({ success: true }) em vez da resposta do\n// modelo — a contabilidade funcionaria e o chamador ficaria sem o texto.\nreturn [{ json: $('Normalizar e precificar').first().json }];\n"
+      },
+      "id": "resposta",
+      "name": "Resposta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1480,
+        -110
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst blocked = $input.first().json;\nreturn [{ json: {\n  ok: false,\n  blocked: true,\n  reason: blocked.blocked_reason,\n  role: blocked.role,\n  received: blocked.received ?? null,\n  spent_usd: blocked.spent_usd ?? null,\n  limit_usd: blocked.limit_usd ?? null,\n} }];\n"
+      },
+      "id": "bloqueado",
+      "name": "Bloqueado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        820,
+        110
+      ]
+    }
+  ],
+  "connections": {
+    "Chamada de outro fluxo": {
+      "main": [
+        [
+          {
+            "node": "Consultar gasto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar gasto": {
+      "main": [
+        [
+          {
+            "node": "Preparar chamada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar chamada": {
+      "main": [
+        [
+          {
+            "node": "Orcamento permite?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Orcamento permite?": {
+      "main": [
+        [
+          {
+            "node": "Chamar provedor",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Bloqueado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chamar provedor": {
+      "main": [
+        [
+          {
+            "node": "Normalizar e precificar",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalizar e precificar": {
+      "main": [
+        [
+          {
+            "node": "Registrar custo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Registrar custo": {
+      "main": [
+        [
+          {
+            "node": "Resposta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

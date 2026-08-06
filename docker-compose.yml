@@ -109,6 +109,22 @@ services:
       # (WSL ou Windows) em vez do container: http://host.docker.internal:11434
       - "host.docker.internal:host-gateway"
 
+  ollama-bridge:
+    # Contorno para Ollama instalado no host escutando só em 127.0.0.1, que é o
+    # padrão do instalador oficial. Containers não alcançam o loopback do host,
+    # então este encaminhador roda na rede do host e reexpõe a porta.
+    #   docker compose --profile ollama-bridge up -d
+    #   LLM_QA_BASE_URL=http://host.docker.internal:11435
+    #
+    # O ajuste definitivo dispensa esta ponte e exige root uma única vez:
+    #   sudo systemctl edit --force ollama   →  Environment="OLLAMA_HOST=0.0.0.0"
+    #   sudo systemctl restart ollama        →  LLM_QA_BASE_URL=http://host.docker.internal:11434
+    profiles: ["ollama-bridge"]
+    image: alpine/socat:latest
+    restart: unless-stopped
+    network_mode: host
+    command: TCP-LISTEN:11435,fork,reuseaddr TCP:127.0.0.1:11434
+
   ollama:
     # Opcional. Exige nvidia-container-toolkit instalado; sem ele o container
     # sobe em CPU e fica lento demais para ser útil.

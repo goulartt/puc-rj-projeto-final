@@ -1,0 +1,77 @@
+{
+  "id": "gatewaysmoke00001",
+  "name": "99 - Smoke test do gateway",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "disparo-manual",
+      "name": "Disparo manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Carga fixa para o smoke test. Pergunta trivial de proposito: o que se quer\n// verificar e o caminho — env var -> adaptador -> provedor -> usage\n// normalizado -> custo registrado —, nao a qualidade da resposta.\nreturn [{ json: {\n  role: 'qa',\n  system: 'Responda em uma unica palavra, sem pontuacao.',\n  messages: [{ role: 'user', content: 'Capital do Brasil?' }],\n  maxTokens: 2048,\n} }];\n"
+      },
+      "id": "carga-de-teste",
+      "name": "Carga de teste",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "llmgateway0000001",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "chamar-gateway",
+      "name": "Chamar gateway",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        400,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Disparo manual": {
+      "main": [
+        [
+          {
+            "node": "Carga de teste",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Carga de teste": {
+      "main": [
+        [
+          {
+            "node": "Chamar gateway",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
