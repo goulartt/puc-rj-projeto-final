@@ -1182,7 +1182,11 @@ return $input.all().map((item, index) => {
 """
 
 CHAT_INGEST_REPLY = CHAT_FORMAT_HELPERS + """
-const result = $input.first().json;
+const result = $('Chamar ingestao').first().json;
+// Riscos, lacunas e fatos favoraveis chegam prontos do servico: rotulo em
+// portugues, risco generico ja despriorizado e destaque ja derivado. Aqui so
+// se formata.
+const view = $input.first().json;
 // Uma mensagem do Telegram carrega no maximo um documento, entao ha exatamente
 // um item nesta rota.
 const routed = $('Aplicar escopo').all()
@@ -1205,8 +1209,6 @@ const occupancy = {
   occupied: 'ocupado', vacant: 'desocupado', not_informed: 'NAO INFORMADO no edital',
 }[((a.occupancy || {}).status || {}).value || (a.occupancy || {}).status] || null;
 
-const risks = (a.risks || []).filter((r) => r.severity === 'high').slice(0, 3);
-const gaps = (a.gaps || []).slice(0, 3);
 const appraisal = a.appraisal || {};
 
 const out = [
@@ -1221,16 +1223,28 @@ const out = [
   '',
 ].filter((l) => l !== null);
 
-if (risks.length) {
-  out.push(bold('Riscos de maior peso'));
-  risks.forEach((r) => out.push('• ' + esc(r.description)));
+// Favoravel antes de risco: quem le tres linhas de alerta e nada em contrario
+// conclui que o lote e ruim, mesmo quando o edital nao diz isso. Sao fatos do
+// documento, nao recomendacao — dizer se vale a pena continua recusado.
+if ((view.highlights || []).length) {
+  out.push(bold('A favor'));
+  view.highlights.forEach((h) => out.push('• ' + esc(h.text)));
   out.push('');
 }
-if (gaps.length) {
+if ((view.risks || []).length) {
+  out.push(bold('Pontos de atencao'));
+  view.risks.forEach((r) => out.push('• ' + esc(r.description)));
+  if (view.risks_generic_hidden) {
+    out.push('<i>(' + view.risks_generic_hidden + ' aviso' +
+             (view.risks_generic_hidden > 1 ? 's' : '') +
+             ' padrao de leilao omitido' + (view.risks_generic_hidden > 1 ? 's' : '') +
+             ' — pergunte se quiser ver)</i>');
+  }
+  out.push('');
+}
+if ((view.gaps || []).length) {
   out.push(bold('O que o edital NAO informa'));
-  // `g.field` vem do schema em snake_case — e exatamente o valor que derrubava
-  // o envio no Markdown legado.
-  gaps.forEach((g) => out.push('• ' + esc(g.field) + ' — ' + esc(g.why_it_matters)));
+  view.gaps.forEach((g) => out.push('• ' + bold(g.label) + ' — ' + esc(g.why_it_matters)));
   out.push('');
 }
 out.push('Pergunte o que quiser sobre este edital. Nao sou advogado e nao digo se',
@@ -1310,7 +1324,24 @@ def build_chat() -> dict:
             "workflowId": {"__rl": True, "value": INGEST_ID, "mode": "id"},
             "options": {"waitForSubWorkflow": True},
         }),
-        node("Resposta da ficha", "n8n-nodes-base.code", 2, [880, -320],
+        # Situacao processual, quando ja consultada. `alwaysOutputData` porque
+        # a ausencia de consulta e um resultado legitimo: sem ela o resumo
+        # simplesmente nao afirma nada sobre o processo, em vez de tranquilizar
+        # sem base.
+        node("Buscar situacao do processo", "n8n-nodes-base.postgres", 2.7, [880, -320], {
+            "operation": "executeQuery",
+            "query": "SELECT summary FROM case_lookups WHERE cnj_number = $1 LIMIT 1;",
+            "options": {"queryReplacement":
+                        "={{ [ (($json.analysis || {}).court_case || {}).number || '' ] }}"},
+        }, credentials=POSTGRES_CRED, alwaysOutputData=True),
+        node("Traduzir para exibicao", "n8n-nodes-base.httpRequest", 4.2, [1080, -320], {
+            "method": "POST", "url": "={{ $env.DOCLING_URL }}/present",
+            "sendBody": True, "specifyBody": "json",
+            "jsonBody": ("={{ JSON.stringify({ "
+                         "ficha: ($('Chamar ingestao').first().json.analysis || {}), "
+                         "case: ($json.summary || null) }) }}"),
+            "options": {"timeout": 30000}}),
+        node("Resposta da ficha", "n8n-nodes-base.code", 2, [1280, -320],
              {"jsCode": CHAT_INGEST_REPLY}),
 
         # ── pergunta ──
@@ -1351,7 +1382,7 @@ def build_chat() -> dict:
         node("Recusa fora de escopo", "n8n-nodes-base.code", 2, [1060, 560],
              {"jsCode": CHAT_REFUSAL}),
 
-        _telegram_send("Responder ficha", [1100, -320]),
+        _telegram_send("Responder ficha", [1480, -320]),
         _telegram_send("Responder pergunta", [2080, -120]),
         _telegram_send("Responder ajuda", [880, 100]),
         _telegram_send("Responder exclusao", [1100, 260]),
@@ -1374,7 +1405,8 @@ def build_chat() -> dict:
             [{"node": "Arquivo nao suportado", "type": "main", "index": 0}],
             [{"node": "Recusa fora de escopo", "type": "main", "index": 0}],
         ]},
-        **chain("Chamar ingestao", "Resposta da ficha", "Responder ficha"),
+        **chain("Chamar ingestao", "Buscar situacao do processo",
+                "Traduzir para exibicao", "Resposta da ficha", "Responder ficha"),
         **chain("Carregar ficha do chat", "Montar contexto", "Buscar prompt de Q&A",
                 "Buscar glossario",
                 "Preparar pergunta", "Perguntar ao modelo", "Resposta da pergunta",
@@ -1401,8 +1433,16 @@ CHAT_SMOKE_MESSAGES = """
 // Mensagens sinteticas no formato que o Telegram entrega, uma por caminho do
 // roteador. O chat_id e o mesmo que a ingestao usou no smoke test, entao o
 // caminho de pergunta encontra a ficha real do edital de exemplo.
+//
+// A primeira leva o PDF de verdade. Sem ela o ramo de documento — o mais caro
+// e o que ja quebrou duas vezes, primeiro perdendo o binario e depois falhando
+// no envio — ficava fora do teste.
 const chat = { id: 'smoke-test' };
+const pdf = $('Ler edital do disco').first();
 return [
+  { json: { message: { chat, document: {
+      file_name: 'edital-exemplo.pdf', mime_type: 'application/pdf' } } },
+    binary: pdf.binary },
   { json: { message: { chat, text: 'Esse imovel esta ocupado?' } } },
   { json: { message: { chat, text: 'Vale a pena comprar esse imovel?' } } },
   { json: { message: { chat, text: 'O que e comissao do leiloeiro?' } } },
@@ -1426,7 +1466,10 @@ def build_chat_smoke() -> dict:
     for original in chat["nodes"]:
         if original["type"] == "n8n-nodes-base.telegramTrigger":
             nodes.append(node("Disparo manual", "n8n-nodes-base.manualTrigger", 1,
-                              [-400, 0], {}))
+                              [-600, 0], {}))
+            nodes.append(node("Ler edital do disco", "n8n-nodes-base.readWriteFile", 1,
+                              [-400, 0], {"fileSelector": "/data/editais/edital-exemplo.pdf",
+                                          "options": {"dataPropertyName": "data"}}))
             nodes.append(node("Mensagem no Telegram", "n8n-nodes-base.code", 2,
                               [-200, 0], {"jsCode": CHAT_SMOKE_MESSAGES}))
             continue
@@ -1440,6 +1483,8 @@ def build_chat_smoke() -> dict:
 
     connections = dict(chat["connections"])
     connections["Disparo manual"] = {
+        "main": [[{"node": "Ler edital do disco", "type": "main", "index": 0}]]}
+    connections["Ler edital do disco"] = {
         "main": [[{"node": "Mensagem no Telegram", "type": "main", "index": 0}]]}
 
     return {

@@ -9,13 +9,29 @@
       "type": "n8n-nodes-base.manualTrigger",
       "typeVersion": 1,
       "position": [
+        -600,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "fileSelector": "/data/editais/edital-exemplo.pdf",
+        "options": {
+          "dataPropertyName": "data"
+        }
+      },
+      "id": "ler-edital-do-disco",
+      "name": "Ler edital do disco",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1,
+      "position": [
         -400,
         0
       ]
     },
     {
       "parameters": {
-        "jsCode": "\n// Mensagens sinteticas no formato que o Telegram entrega, uma por caminho do\n// roteador. O chat_id e o mesmo que a ingestao usou no smoke test, entao o\n// caminho de pergunta encontra a ficha real do edital de exemplo.\nconst chat = { id: 'smoke-test' };\nreturn [\n  { json: { message: { chat, text: 'Esse imovel esta ocupado?' } } },\n  { json: { message: { chat, text: 'Vale a pena comprar esse imovel?' } } },\n  { json: { message: { chat, text: 'O que e comissao do leiloeiro?' } } },\n  { json: { message: { chat, text: 'Posso processar o antigo dono?' } } },\n  { json: { message: { chat, text: '/ajuda' } } },\n  { json: { message: { chat, photo: [{ file_id: 'x' }] } } },\n];\n"
+        "jsCode": "\n// Mensagens sinteticas no formato que o Telegram entrega, uma por caminho do\n// roteador. O chat_id e o mesmo que a ingestao usou no smoke test, entao o\n// caminho de pergunta encontra a ficha real do edital de exemplo.\n//\n// A primeira leva o PDF de verdade. Sem ela o ramo de documento — o mais caro\n// e o que ja quebrou duas vezes, primeiro perdendo o binario e depois falhando\n// no envio — ficava fora do teste.\nconst chat = { id: 'smoke-test' };\nconst pdf = $('Ler edital do disco').first();\nreturn [\n  { json: { message: { chat, document: {\n      file_name: 'edital-exemplo.pdf', mime_type: 'application/pdf' } } },\n    binary: pdf.binary },\n  { json: { message: { chat, text: 'Esse imovel esta ocupado?' } } },\n  { json: { message: { chat, text: 'Vale a pena comprar esse imovel?' } } },\n  { json: { message: { chat, text: 'O que e comissao do leiloeiro?' } } },\n  { json: { message: { chat, text: 'Posso processar o antigo dono?' } } },\n  { json: { message: { chat, text: '/ajuda' } } },\n  { json: { message: { chat, photo: [{ file_id: 'x' }] } } },\n];\n"
       },
       "id": "mensagem-no-telegram",
       "name": "Mensagem no Telegram",
@@ -258,14 +274,58 @@
     },
     {
       "parameters": {
-        "jsCode": "\n// Formatacao das mensagens em HTML, e nao no Markdown legado do Telegram.\n//\n// O Markdown legado quebra com um unico caractere desemparelhado, e a mensagem\n// inteira e recusada com 'Bad request' — a resposta some sem chegar a pessoa e\n// sem erro visivel na conversa. Aconteceu de verdade: a ficha trazia o campo\n// `debts.enforced_claim` na secao de lacunas, e aquele underscore solto\n// derrubou o envio. Como os nomes de campo do schema sao snake_case, a falha\n// era sistematica: quase toda ficha com lacunas quebraria.\n//\n// Em HTML o escape resolve na origem. Escapamos tudo o que e dinamico e so\n// depois envolvemos com as tags que nos mesmos geramos, entao nao ha como\n// produzir marcacao desbalanceada.\n\nfunction esc(value) {\n  return String(value == null ? '' : value)\n    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n}\n\nfunction bold(value) { return '<b>' + esc(value) + '</b>'; }\n\n// O modelo responde em Markdown por habito, e em HTML isso apareceria literal\n// como `**negrito**`. Convertemos os poucos casos que ele usa, sempre DEPOIS\n// do escape — os pares abaixo sao gerados aqui e por isso sempre fecham.\nfunction fromMarkdown(text) {\n  return esc(text)\n    .replace(/^\\s*#{1,6}\\s*(.+)$/gm, (m, title) => '<b>' + title.trim() + '</b>')\n    .replace(/\\*\\*([^*\\n]+)\\*\\*/g, '<b>$1</b>')\n    .replace(/(^|[^*])\\*([^*\\n]+)\\*(?!\\*)/g, '$1<i>$2</i>')\n    .replace(/`([^`\\n]+)`/g, '<code>$1</code>')\n    .replace(/^\\s*[-*]\\s+/gm, '• ');\n}\n\n// O Telegram corta em 4096 caracteres. Truncar com aviso e melhor que a\n// mensagem sumir; o corte respeita a ultima quebra de linha para nao partir\n// uma tag ao meio.\nfunction fit(text) {\n  if (text.length <= 3900) return text;\n  const cut = text.slice(0, 3900);\n  const at = cut.lastIndexOf(String.fromCharCode(10));\n  return (at > 3000 ? cut.slice(0, at) : cut) +\n         String.fromCharCode(10, 10) + '<i>(resposta truncada)</i>';\n}\n\nconst result = $input.first().json;\n// Uma mensagem do Telegram carrega no maximo um documento, entao ha exatamente\n// um item nesta rota.\nconst routed = $('Aplicar escopo').all()\n  .filter((i) => i.json.route === 'document')[0].json;\nconst NL = String.fromCharCode(10);\n\nif (!result.ok) {\n  const problems = (result.problems || []).join('; ');\n  return [{ json: { chat_id: routed.chat_id, text:\n    'Nao consegui analisar este edital.' + NL + NL + esc(problems || 'causa desconhecida') +\n    NL + NL + 'Se o PDF for digitalizado, a leitura pode falhar. Tente outro arquivo.' } }];\n}\n\nconst a = result.analysis || {};\nconst brl = (n) => (n == null ? null\n  : n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }));\nconst line = (label, value) => (value ? bold(label + ':') + ' ' + esc(value) : null);\n\nconst occupancy = {\n  occupied: 'ocupado', vacant: 'desocupado', not_informed: 'NAO INFORMADO no edital',\n}[((a.occupancy || {}).status || {}).value || (a.occupancy || {}).status] || null;\n\nconst risks = (a.risks || []).filter((r) => r.severity === 'high').slice(0, 3);\nconst gaps = (a.gaps || []).slice(0, 3);\nconst appraisal = a.appraisal || {};\n\nconst out = [\n  bold('Ficha do edital') + ' — ' + esc(routed.file_name || 'documento'),\n  '',\n  line('Imovel', ((a.property || {}).type || {}).value),\n  line('Matricula', ((a.property || {}).registry_number || {}).value),\n  line('Avaliacao', brl((appraisal.updated_value || {}).amount_brl\n       || (appraisal.value || {}).amount_brl)),\n  line('Ocupacao', occupancy),\n  line('Processo', (a.court_case || {}).number),\n  '',\n].filter((l) => l !== null);\n\nif (risks.length) {\n  out.push(bold('Riscos de maior peso'));\n  risks.forEach((r) => out.push('• ' + esc(r.description)));\n  out.push('');\n}\nif (gaps.length) {\n  out.push(bold('O que o edital NAO informa'));\n  // `g.field` vem do schema em snake_case — e exatamente o valor que derrubava\n  // o envio no Markdown legado.\n  gaps.forEach((g) => out.push('• ' + esc(g.field) + ' — ' + esc(g.why_it_matters)));\n  out.push('');\n}\nout.push('Pergunte o que quiser sobre este edital. Nao sou advogado e nao digo se',\n         'vale a pena arrematar.');\n\nreturn [{ json: { chat_id: routed.chat_id, text: fit(out.join(NL)) } }];\n"
+        "operation": "executeQuery",
+        "query": "SELECT summary FROM case_lookups WHERE cnj_number = $1 LIMIT 1;",
+        "options": {
+          "queryReplacement": "={{ [ (($json.analysis || {}).court_case || {}).number || '' ] }}"
+        }
+      },
+      "id": "buscar-situacao-do-processo",
+      "name": "Buscar situacao do processo",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        880,
+        -320
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "leilao-postgres",
+          "name": "Postgres do projeto"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DOCLING_URL }}/present",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ ficha: ($('Chamar ingestao').first().json.analysis || {}), case: ($json.summary || null) }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "traduzir-para-exibicao",
+      "name": "Traduzir para exibicao",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1080,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Formatacao das mensagens em HTML, e nao no Markdown legado do Telegram.\n//\n// O Markdown legado quebra com um unico caractere desemparelhado, e a mensagem\n// inteira e recusada com 'Bad request' — a resposta some sem chegar a pessoa e\n// sem erro visivel na conversa. Aconteceu de verdade: a ficha trazia o campo\n// `debts.enforced_claim` na secao de lacunas, e aquele underscore solto\n// derrubou o envio. Como os nomes de campo do schema sao snake_case, a falha\n// era sistematica: quase toda ficha com lacunas quebraria.\n//\n// Em HTML o escape resolve na origem. Escapamos tudo o que e dinamico e so\n// depois envolvemos com as tags que nos mesmos geramos, entao nao ha como\n// produzir marcacao desbalanceada.\n\nfunction esc(value) {\n  return String(value == null ? '' : value)\n    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n}\n\nfunction bold(value) { return '<b>' + esc(value) + '</b>'; }\n\n// O modelo responde em Markdown por habito, e em HTML isso apareceria literal\n// como `**negrito**`. Convertemos os poucos casos que ele usa, sempre DEPOIS\n// do escape — os pares abaixo sao gerados aqui e por isso sempre fecham.\nfunction fromMarkdown(text) {\n  return esc(text)\n    .replace(/^\\s*#{1,6}\\s*(.+)$/gm, (m, title) => '<b>' + title.trim() + '</b>')\n    .replace(/\\*\\*([^*\\n]+)\\*\\*/g, '<b>$1</b>')\n    .replace(/(^|[^*])\\*([^*\\n]+)\\*(?!\\*)/g, '$1<i>$2</i>')\n    .replace(/`([^`\\n]+)`/g, '<code>$1</code>')\n    .replace(/^\\s*[-*]\\s+/gm, '• ');\n}\n\n// O Telegram corta em 4096 caracteres. Truncar com aviso e melhor que a\n// mensagem sumir; o corte respeita a ultima quebra de linha para nao partir\n// uma tag ao meio.\nfunction fit(text) {\n  if (text.length <= 3900) return text;\n  const cut = text.slice(0, 3900);\n  const at = cut.lastIndexOf(String.fromCharCode(10));\n  return (at > 3000 ? cut.slice(0, at) : cut) +\n         String.fromCharCode(10, 10) + '<i>(resposta truncada)</i>';\n}\n\nconst result = $('Chamar ingestao').first().json;\n// Riscos, lacunas e fatos favoraveis chegam prontos do servico: rotulo em\n// portugues, risco generico ja despriorizado e destaque ja derivado. Aqui so\n// se formata.\nconst view = $input.first().json;\n// Uma mensagem do Telegram carrega no maximo um documento, entao ha exatamente\n// um item nesta rota.\nconst routed = $('Aplicar escopo').all()\n  .filter((i) => i.json.route === 'document')[0].json;\nconst NL = String.fromCharCode(10);\n\nif (!result.ok) {\n  const problems = (result.problems || []).join('; ');\n  return [{ json: { chat_id: routed.chat_id, text:\n    'Nao consegui analisar este edital.' + NL + NL + esc(problems || 'causa desconhecida') +\n    NL + NL + 'Se o PDF for digitalizado, a leitura pode falhar. Tente outro arquivo.' } }];\n}\n\nconst a = result.analysis || {};\nconst brl = (n) => (n == null ? null\n  : n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }));\nconst line = (label, value) => (value ? bold(label + ':') + ' ' + esc(value) : null);\n\nconst occupancy = {\n  occupied: 'ocupado', vacant: 'desocupado', not_informed: 'NAO INFORMADO no edital',\n}[((a.occupancy || {}).status || {}).value || (a.occupancy || {}).status] || null;\n\nconst appraisal = a.appraisal || {};\n\nconst out = [\n  bold('Ficha do edital') + ' — ' + esc(routed.file_name || 'documento'),\n  '',\n  line('Imovel', ((a.property || {}).type || {}).value),\n  line('Matricula', ((a.property || {}).registry_number || {}).value),\n  line('Avaliacao', brl((appraisal.updated_value || {}).amount_brl\n       || (appraisal.value || {}).amount_brl)),\n  line('Ocupacao', occupancy),\n  line('Processo', (a.court_case || {}).number),\n  '',\n].filter((l) => l !== null);\n\n// Favoravel antes de risco: quem le tres linhas de alerta e nada em contrario\n// conclui que o lote e ruim, mesmo quando o edital nao diz isso. Sao fatos do\n// documento, nao recomendacao — dizer se vale a pena continua recusado.\nif ((view.highlights || []).length) {\n  out.push(bold('A favor'));\n  view.highlights.forEach((h) => out.push('• ' + esc(h.text)));\n  out.push('');\n}\nif ((view.risks || []).length) {\n  out.push(bold('Pontos de atencao'));\n  view.risks.forEach((r) => out.push('• ' + esc(r.description)));\n  if (view.risks_generic_hidden) {\n    out.push('<i>(' + view.risks_generic_hidden + ' aviso' +\n             (view.risks_generic_hidden > 1 ? 's' : '') +\n             ' padrao de leilao omitido' + (view.risks_generic_hidden > 1 ? 's' : '') +\n             ' — pergunte se quiser ver)</i>');\n  }\n  out.push('');\n}\nif ((view.gaps || []).length) {\n  out.push(bold('O que o edital NAO informa'));\n  view.gaps.forEach((g) => out.push('• ' + bold(g.label) + ' — ' + esc(g.why_it_matters)));\n  out.push('');\n}\nout.push('Pergunte o que quiser sobre este edital. Nao sou advogado e nao digo se',\n         'vale a pena arrematar.');\n\nreturn [{ json: { chat_id: routed.chat_id, text: fit(out.join(NL)) } }];\n"
       },
       "id": "resposta-da-ficha",
       "name": "Resposta da ficha",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        880,
+        1280,
         -320
       ]
     },
@@ -470,7 +530,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        1100,
+        1480,
         -320
       ]
     },
@@ -646,6 +706,28 @@
       "main": [
         [
           {
+            "node": "Buscar situacao do processo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar situacao do processo": {
+      "main": [
+        [
+          {
+            "node": "Traduzir para exibicao",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Traduzir para exibicao": {
+      "main": [
+        [
+          {
             "node": "Resposta da ficha",
             "type": "main",
             "index": 0
@@ -797,6 +879,17 @@
       ]
     },
     "Disparo manual": {
+      "main": [
+        [
+          {
+            "node": "Ler edital do disco",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ler edital do disco": {
       "main": [
         [
           {

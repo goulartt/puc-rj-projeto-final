@@ -36,7 +36,7 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 sys.path.insert(0, "/app/lib")
-from extractors import cnj, fields, movements, scope  # noqa: E402
+from extractors import cnj, fields, movements, presentation, scope  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("docling-service")
@@ -211,6 +211,25 @@ def check_scope(payload: dict = Body(...)) -> JSONResponse:
         raise HTTPException(status_code=400, detail="`texts` deve ser uma lista")
 
     return JSONResponse({"results": scope.classify_all([str(t or "") for t in texts])})
+
+
+@app.post("/present")
+def present(payload: dict = Body(...)) -> JSONResponse:
+    """Traduz a ficha para o que a pessoa lê.
+
+    Vive aqui, e não num nó de código do n8n, pela mesma razão dos outros
+    extratores: em Python tem teste. A tradução de campo, o desempate de risco
+    genérico e a derivação de fato favorável são regras, e regra sem teste
+    apodrece em silêncio — o caminho `debts.enforced_claim` foi parar na tela
+    de um usuário justamente porque não havia nada afirmando o contrário.
+    """
+    ficha = payload.get("ficha") or payload.get("analysis") or {}
+    if not isinstance(ficha, dict):
+        raise HTTPException(status_code=400, detail="`ficha` deve ser um objeto")
+
+    case = payload.get("case")
+    max_items = int(payload.get("max_items") or 3)
+    return JSONResponse(presentation.present(ficha, case, max_items=max_items))
 
 
 @app.post("/movements/analyze")

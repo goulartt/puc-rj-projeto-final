@@ -42,7 +42,9 @@ docker compose up -d
 ```
 
 No Telegram, envie o PDF do edital ao bot. Em ~4 minutos ele responde com a
-ficha — prazos, valores, ônus, débitos e lacunas. Depois é conversa normal:
+ficha em três blocos: **a favor** (deságio da segunda praça, ausência de ônus,
+processo sem sinal de cancelamento), **pontos de atenção** e **o que o edital
+não informa**. Depois é conversa normal:
 
 > **você:** esse imóvel está ocupado?
 > **bot:** O edital não informa a ocupação. Ele atribui a imissão na posse ao
@@ -153,6 +155,18 @@ O filtro é conservador de propósito: metade de `tests/test_scope.py` guarda as
 perguntas que **precisam passar**, porque recusar uma pergunta respondível é
 pior que deixar passar uma duvidosa — a segunda ainda encontra o prompt pela
 frente, a primeira não tem resgate.
+
+### Relatar não é aconselhar
+
+O bloco "a favor" mostra fatos favoráveis — "segunda praça 40% abaixo da
+avaliação" é um dado do edital, como "imóvel ocupado" é. Ele existe porque três
+linhas de alerta sem contrapartida levam a pessoa a concluir que o lote é ruim,
+mesmo quando o documento não diz isso.
+
+Nada ali é recomendação, e cada fato exige base: ausência de ônus só é afirmada
+quando o edital se pronunciou, e "processo sem sinal de cancelamento" só depois
+de a consulta ao DataJud ter sido feita. Sem apuração, silêncio — nunca uma
+frase tranquilizadora sem lastro. Dizer se vale a pena continua recusado.
 
 ### O efeito das âncoras determinísticas
 
