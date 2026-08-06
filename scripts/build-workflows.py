@@ -95,6 +95,10 @@ return [{{ json: {{
   allowed: true,
   role,
   chatId,
+  // Cravado logo antes da chamada HTTP: o que fica entre este no e o proximo
+  // e o tempo do provedor, que e onde praticamente todo o relogio do fluxo
+  // esta. Sem isto, medir uma etapa exige abrir o SQLite do n8n.
+  started_at: Date.now(),
   provider: config.provider,
   model: config.model,
   base_url: config.baseUrl,
@@ -120,7 +124,8 @@ if (raw.error || raw.__httpError) {{
   return [{{ json: {{
     ok: false,
     role: prepared.role,
-  chat_id: prepared.chatId,
+    chat_id: prepared.chatId,
+    duration_ms: Date.now() - (prepared.started_at || Date.now()),
     chatId: prepared.chatId,
     provider: prepared.provider,
     model: prepared.model,
@@ -146,6 +151,7 @@ return [{{ json: {{
   ok: !normalized.refusal,
   role: prepared.role,
   chat_id: prepared.chatId,
+  duration_ms: Date.now() - (prepared.started_at || Date.now()),
   provider: prepared.provider,
   model: normalized.model || prepared.model,
   text: normalized.text,
@@ -312,13 +318,15 @@ def build() -> dict:
                 "operation": "executeQuery",
                 "query": (
                     "INSERT INTO llm_calls "
-                    "(role, chat_id, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd, error) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);"
+                    "(role, chat_id, provider, model, input_tokens, output_tokens, cached_tokens, "
+                    "cost_usd, duration_ms, error) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10);"
                 ),
                 "options": {
                     "queryReplacement": (
                         "={{ [$json.role, $json.chat_id, $json.provider, $json.model, $json.usage.input,"
-                    " $json.usage.output, $json.usage.cached, $json.cost_usd, $json.error] }}"
+                    " $json.usage.output, $json.usage.cached, $json.cost_usd,"
+                    " $json.duration_ms, $json.error] }}"
                     )
                 },
             },

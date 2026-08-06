@@ -42,6 +42,9 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     output_tokens INTEGER       NOT NULL DEFAULT 0,
     cached_tokens INTEGER       NOT NULL DEFAULT 0,
     cost_usd      NUMERIC(10,6) NOT NULL DEFAULT 0,
+    -- Tempo da chamada ao provedor. Praticamente todo o relogio do fluxo esta
+    -- aqui: a conversao do PDF leva ~4s e o modelo, minutos.
+    duration_ms   INTEGER,
     -- Chamada que falhou também é registrada: saber que houve tentativa importa.
     -- Sem esta coluna, uma falha (custo zero, tokens zero) fica indistinguível
     -- de uma chamada local bem-sucedida no mesmo log.
@@ -70,13 +73,20 @@ CREATE OR REPLACE VIEW usage_by_chat AS
      GROUP BY chat_id
      ORDER BY cost_usd DESC;
 
-CREATE OR REPLACE VIEW llm_call_health AS
-    SELECT provider, model,
+DROP VIEW IF EXISTS llm_call_health;
+CREATE VIEW llm_call_health AS
+    SELECT provider, model, role,
            count(*)                                  AS calls,
            count(*) FILTER (WHERE error IS NOT NULL) AS failures,
-           round(SUM(cost_usd), 6)                   AS cost_usd
+           round(SUM(cost_usd), 6)                   AS cost_usd,
+           round(avg(duration_ms) / 1000.0, 1)       AS avg_seconds,
+           round(max(duration_ms) / 1000.0, 1)       AS max_seconds,
+           -- Tokens de saida por segundo: e o que explica a diferenca entre
+           -- uma extracao de 2 e uma de 4 minutos no mesmo modelo.
+           round(SUM(output_tokens) /
+                 NULLIF(SUM(duration_ms) / 1000.0, 0), 1) AS output_tokens_per_second
       FROM llm_calls
-     GROUP BY provider, model;
+     GROUP BY provider, model, role;
 
 -- ─── Deduplicação do scrape (iteração 2) ────────────────────────────────────
 CREATE TABLE IF NOT EXISTS scraped_listings (

@@ -69,6 +69,33 @@ psql -c "SELECT * FROM llm_call_health;"   # taxa de erro por modelo
 `error`. Sem isso, uma falha (custo zero, tokens zero) ficaria indistinguível de
 uma chamada local bem-sucedida.
 
+### Quanto tempo cada etapa leva
+
+```bash
+psql -c "SELECT * FROM llm_call_health;"   # média, pico e tokens/s por modelo
+psql -c "SELECT role, model, duration_ms, output_tokens, cost_usd
+           FROM llm_calls ORDER BY id DESC LIMIT 10;"
+```
+
+`duration_ms` mede a chamada ao provedor, que é onde praticamente todo o
+relógio está. Medição de 06/08/2026, edital de exemplo:
+
+| Etapa | Tempo | Fatia |
+|---|---|---|
+| Aviso de recebimento | 0,9 s | — |
+| Conversão do PDF (Docling) | 3,9 s | 2,6% |
+| **Extração da ficha (DeepSeek)** | **147 s** | **97,4%** |
+| Consulta processual, tradução, envio | < 0,1 s | ~0% |
+| Pergunta no Q&A (qwen3:14b local) | 13–33 s | — |
+
+O modelo é o gargalo, e nada mais chega perto: os nós de código, as consultas
+ao Postgres e as chamadas ao serviço de documentos somam menos de 100 ms.
+Otimizar qualquer coisa que não seja a chamada ao modelo não muda nada.
+
+A variação entre extrações — 147 s contra 236 s no mesmo edital — vem do número
+de tokens de saída, não do tamanho do PDF: o modelo de raciocínio decide quanto
+pensar. `output_tokens_per_second` na view separa as duas coisas.
+
 ### Logs dos contêineres
 
 ```bash
