@@ -1181,6 +1181,24 @@ return $input.all().map((item, index) => {
 });
 """
 
+CHAT_ACK = CHAT_FORMAT_HELPERS + """
+// Aviso imediato de que o edital chegou.
+//
+// A leitura do PDF, a extracao e a validacao levam alguns minutos. Sem isto a
+// pessoa manda o arquivo e nao recebe nada — nao da para distinguir "esta
+// processando" de "o bot morreu", e a reacao natural e reenviar o edital, o
+// que dobra o custo da extracao.
+const routed = $input.first().json;
+
+return [{ json: { chat_id: routed.chat_id, text: [
+  'Recebi o edital' + (routed.file_name ? ' — ' + esc(routed.file_name) : '') + '.',
+  '',
+  'Estou lendo o documento e montando a ficha. Costuma levar de dois a cinco',
+  'minutos, dependendo do tamanho. Aviso aqui quando terminar; nao precisa',
+  'reenviar.',
+].join(String.fromCharCode(10)) } }];
+"""
+
 CHAT_INGEST_REPLY = CHAT_FORMAT_HELPERS + """
 const result = $('Chamar ingestao').first().json;
 // Riscos, lacunas e fatos favoraveis chegam prontos do servico: rotulo em
@@ -1324,6 +1342,9 @@ def build_chat() -> dict:
             "workflowId": {"__rl": True, "value": INGEST_ID, "mode": "id"},
             "options": {"waitForSubWorkflow": True},
         }),
+        node("Aviso de processamento", "n8n-nodes-base.code", 2, [660, -480],
+             {"jsCode": CHAT_ACK}),
+
         # Situacao processual, quando ja consultada. `alwaysOutputData` porque
         # a ausencia de consulta e um resultado legitimo: sem ela o resumo
         # simplesmente nao afirma nada sobre o processo, em vez de tranquilizar
@@ -1382,6 +1403,7 @@ def build_chat() -> dict:
         node("Recusa fora de escopo", "n8n-nodes-base.code", 2, [1060, 560],
              {"jsCode": CHAT_REFUSAL}),
 
+        _telegram_send("Responder aviso", [880, -480]),
         _telegram_send("Responder ficha", [1480, -320]),
         _telegram_send("Responder pergunta", [2080, -120]),
         _telegram_send("Responder ajuda", [880, 100]),
@@ -1398,13 +1420,19 @@ def build_chat() -> dict:
         **chain("Mensagem no Telegram", "Rotear mensagem", "Classificar escopo",
                 "Consultar escopo", "Aplicar escopo", "Caminho"),
         "Caminho": {"main": [
-            [{"node": "Chamar ingestao", "type": "main", "index": 0}],
+            # Duas saidas para o mesmo ramo: o aviso vai primeiro e a ingestao
+            # segue em paralelo. Em serie nao funcionaria — o no do Telegram
+            # devolve a resposta da API no lugar do item, e o PDF se perderia
+            # antes de chegar ao Docling.
+            [{"node": "Aviso de processamento", "type": "main", "index": 0},
+             {"node": "Chamar ingestao", "type": "main", "index": 0}],
             [{"node": "Carregar ficha do chat", "type": "main", "index": 0}],
             [{"node": "Texto de ajuda", "type": "main", "index": 0}],
             [{"node": "Apagar dados do chat", "type": "main", "index": 0}],
             [{"node": "Arquivo nao suportado", "type": "main", "index": 0}],
             [{"node": "Recusa fora de escopo", "type": "main", "index": 0}],
         ]},
+        **chain("Aviso de processamento", "Responder aviso"),
         **chain("Chamar ingestao", "Buscar situacao do processo",
                 "Traduzir para exibicao", "Resposta da ficha", "Responder ficha"),
         **chain("Carregar ficha do chat", "Montar contexto", "Buscar prompt de Q&A",

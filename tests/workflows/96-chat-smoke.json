@@ -274,6 +274,19 @@
     },
     {
       "parameters": {
+        "jsCode": "\n// Formatacao das mensagens em HTML, e nao no Markdown legado do Telegram.\n//\n// O Markdown legado quebra com um unico caractere desemparelhado, e a mensagem\n// inteira e recusada com 'Bad request' — a resposta some sem chegar a pessoa e\n// sem erro visivel na conversa. Aconteceu de verdade: a ficha trazia o campo\n// `debts.enforced_claim` na secao de lacunas, e aquele underscore solto\n// derrubou o envio. Como os nomes de campo do schema sao snake_case, a falha\n// era sistematica: quase toda ficha com lacunas quebraria.\n//\n// Em HTML o escape resolve na origem. Escapamos tudo o que e dinamico e so\n// depois envolvemos com as tags que nos mesmos geramos, entao nao ha como\n// produzir marcacao desbalanceada.\n\nfunction esc(value) {\n  return String(value == null ? '' : value)\n    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n}\n\nfunction bold(value) { return '<b>' + esc(value) + '</b>'; }\n\n// O modelo responde em Markdown por habito, e em HTML isso apareceria literal\n// como `**negrito**`. Convertemos os poucos casos que ele usa, sempre DEPOIS\n// do escape — os pares abaixo sao gerados aqui e por isso sempre fecham.\nfunction fromMarkdown(text) {\n  return esc(text)\n    .replace(/^\\s*#{1,6}\\s*(.+)$/gm, (m, title) => '<b>' + title.trim() + '</b>')\n    .replace(/\\*\\*([^*\\n]+)\\*\\*/g, '<b>$1</b>')\n    .replace(/(^|[^*])\\*([^*\\n]+)\\*(?!\\*)/g, '$1<i>$2</i>')\n    .replace(/`([^`\\n]+)`/g, '<code>$1</code>')\n    .replace(/^\\s*[-*]\\s+/gm, '• ');\n}\n\n// O Telegram corta em 4096 caracteres. Truncar com aviso e melhor que a\n// mensagem sumir; o corte respeita a ultima quebra de linha para nao partir\n// uma tag ao meio.\nfunction fit(text) {\n  if (text.length <= 3900) return text;\n  const cut = text.slice(0, 3900);\n  const at = cut.lastIndexOf(String.fromCharCode(10));\n  return (at > 3000 ? cut.slice(0, at) : cut) +\n         String.fromCharCode(10, 10) + '<i>(resposta truncada)</i>';\n}\n\n// Aviso imediato de que o edital chegou.\n//\n// A leitura do PDF, a extracao e a validacao levam alguns minutos. Sem isto a\n// pessoa manda o arquivo e nao recebe nada — nao da para distinguir \"esta\n// processando\" de \"o bot morreu\", e a reacao natural e reenviar o edital, o\n// que dobra o custo da extracao.\nconst routed = $input.first().json;\n\nreturn [{ json: { chat_id: routed.chat_id, text: [\n  'Recebi o edital' + (routed.file_name ? ' — ' + esc(routed.file_name) : '') + '.',\n  '',\n  'Estou lendo o documento e montando a ficha. Costuma levar de dois a cinco',\n  'minutos, dependendo do tamanho. Aviso aqui quando terminar; nao precisa',\n  'reenviar.',\n].join(String.fromCharCode(10)) } }];\n"
+      },
+      "id": "aviso-de-processamento",
+      "name": "Aviso de processamento",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        -480
+      ]
+    },
+    {
+      "parameters": {
         "operation": "executeQuery",
         "query": "SELECT summary FROM case_lookups WHERE cnj_number = $1 LIMIT 1;",
         "options": {
@@ -525,6 +538,19 @@
       "parameters": {
         "jsCode": "return $input.all();"
       },
+      "id": "responder-aviso",
+      "name": "Responder aviso",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        -480
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all();"
+      },
       "id": "responder-ficha",
       "name": "Responder ficha",
       "type": "n8n-nodes-base.code",
@@ -660,6 +686,11 @@
       "main": [
         [
           {
+            "node": "Aviso de processamento",
+            "type": "main",
+            "index": 0
+          },
+          {
             "node": "Chamar ingestao",
             "type": "main",
             "index": 0
@@ -696,6 +727,17 @@
         [
           {
             "node": "Recusa fora de escopo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aviso de processamento": {
+      "main": [
+        [
+          {
+            "node": "Responder aviso",
             "type": "main",
             "index": 0
           }
