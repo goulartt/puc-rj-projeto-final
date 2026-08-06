@@ -72,11 +72,28 @@ texto; rodar OCR neles é lento e introduz ruído de transcrição. O parâmetro
 `ocr=true` cobre os digitalizados, e usa `rapidocr` explicitamente — o seletor
 automático poderia escolher um engine que não está na imagem.
 
-**Docker sem GPU nesta máquina.** Falta o `nvidia-container-toolkit`, então o
-serviço `ollama` fica num profile opcional. Isso não bloqueia o projeto: o
-Estágio 1 usa API e só o Q&A local precisaria de GPU. `LLM_QA_BASE_URL` aponta
-para onde houver um Ollama — container, WSL ou Windows via
-`host.docker.internal`.
+**Ollama roda no host, não em container.** O Docker desta máquina não tem
+`nvidia-container-toolkit`, então um Ollama containerizado ficaria em CPU. Mas
+o toolkit só é necessário para *containers*: processo nativo do WSL enxerga a
+GPU direto. O Ollama instalado no host usa a RTX 4070 Ti Super sem nenhum
+ajuste, e o n8n o alcança por `host.docker.internal:11434`.
+
+Isso exige que o Ollama escute além do loopback, o que o instalador oficial não
+faz por padrão:
+
+```
+sudo mkdir -p /etc/systemd/system/ollama.service.d
+printf '[Service]\nEnvironment="OLLAMA_HOST=0.0.0.0"\n' \
+  | sudo tee /etc/systemd/system/ollama.service.d/override.conf
+sudo systemctl daemon-reload && sudo systemctl restart ollama
+```
+
+Sem isso, containers não alcançam o serviço — loopback do host não é acessível
+de dentro de um container. O perfil `ollama-bridge` no compose cobre esse caso
+com um encaminhador `socat`, para quem não puder mexer no systemd.
+
+O serviço `ollama` do compose continua existindo no perfil `local-llm`, para
+máquinas onde o toolkit esteja instalado.
 
 ## Camada de modelo
 
