@@ -1,0 +1,5 @@
+# Versões conferidas no PyPI em 05/08/2026.
+docling==2.118.0
+fastapi==0.141.1
+uvicorn[standard]==0.52.1
+python-multipart==0.0.32

@@ -1,0 +1,134 @@
+# Assistente de Leilão de Imóveis — infraestrutura local
+#
+#   docker compose up -d                      # núcleo: n8n + docling + postgres + túnel
+#   docker compose --profile local-llm up -d  # + ollama (exige nvidia-container-toolkit)
+#
+# O webhook do Telegram precisa de uma URL HTTPS pública. O n8n 2.x removeu a
+# flag `--tunnel`, então usamos um quick tunnel do Cloudflare — sem conta, URL
+# aleatória que muda a cada restart. Para descobri-la e religar o n8n com ela:
+#   ./scripts/tunnel-url.sh
+
+name: leilao-assistente
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./services/postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      # 5434 no host: 5433 já está ocupada pelo container `consolidador-db`
+      - "127.0.0.1:5434:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  docling:
+    build: ./services/docling
+    restart: unless-stopped
+    # Os modelos de layout/tabela/OCR vêm embutidos na imagem (ver Dockerfile),
+    # então não há volume de cache nem download em runtime.
+    environment:
+      # O torch.compile/inductor tenta gerar e compilar kernels em C++, e a
+      # imagem slim não tem g++. Em CPU o ganho não paga o compilador extra,
+      # então desligamos o dynamo em vez de instalar build-essential.
+      TORCHDYNAMO_DISABLE: "1"
+    ports:
+      - "127.0.0.1:5001:5001"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://localhost:5001/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
+
+  cloudflared:
+    # Quick tunnel: expõe o n8n em https://<aleatorio>.trycloudflare.com sem
+    # exigir conta na Cloudflare. A URL sai nos logs deste container.
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --url http://n8n:5678
+    depends_on:
+      - n8n
+
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY}
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE}
+      TZ: ${GENERIC_TIMEZONE}
+
+      # Preenchido por ./scripts/tunnel-url.sh. É o que o n8n usa para montar
+      # a URL de webhook que registramos no Telegram — sem isso ele gera
+      # http://localhost:5678, que o Telegram não consegue alcançar.
+      WEBHOOK_URL: ${WEBHOOK_URL}
+
+      # Deixa os fluxos lerem process.env — é assim que o gateway troca de
+      # provider sem editar workflow. Sem isso, a abstração não funciona.
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
+
+      # Variáveis consumidas pelos fluxos
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      LLM_EXTRACTION_PROVIDER: ${LLM_EXTRACTION_PROVIDER}
+      LLM_EXTRACTION_MODEL: ${LLM_EXTRACTION_MODEL}
+      LLM_EXTRACTION_BASE_URL: ${LLM_EXTRACTION_BASE_URL}
+      LLM_EXTRACTION_API_KEY: ${LLM_EXTRACTION_API_KEY}
+      LLM_QA_PROVIDER: ${LLM_QA_PROVIDER}
+      LLM_QA_MODEL: ${LLM_QA_MODEL}
+      LLM_QA_BASE_URL: ${LLM_QA_BASE_URL}
+      LLM_QA_API_KEY: ${LLM_QA_API_KEY}
+      BUDGET_USD_LIMIT: ${BUDGET_USD_LIMIT}
+      DATAJUD_API_KEY: ${DATAJUD_API_KEY}
+      DATAJUD_BASE_URL: ${DATAJUD_BASE_URL}
+      DOCLING_URL: ${DOCLING_URL}
+      PGHOST: postgres
+      PGPORT: 5432
+      PGUSER: ${POSTGRES_USER}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB}
+    volumes:
+      - n8n-data:/home/node/.n8n
+      - ./workflows:/workflows:ro
+      - ./prompts:/prompts:ro
+      - ./schemas:/schemas:ro
+    ports:
+      - "127.0.0.1:5678:5678"
+    extra_hosts:
+      # Permite apontar LLM_QA_BASE_URL para um Ollama rodando no host
+      # (WSL ou Windows) em vez do container: http://host.docker.internal:11434
+      - "host.docker.internal:host-gateway"
+
+  ollama:
+    # Opcional. Exige nvidia-container-toolkit instalado; sem ele o container
+    # sobe em CPU e fica lento demais para ser útil.
+    #   docker compose --profile local-llm up -d
+    profiles: ["local-llm"]
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    volumes:
+      - ollama-data:/root/.ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  postgres-data:
+  n8n-data:
+  ollama-data:

@@ -1,0 +1,32 @@
+# Segredos — nunca versionar
+.env
+*.key
+*.pem
+
+# Material de aula (não é artefato do produto)
+*.pdf
+!data/editais/*.pdf
+
+# Dados locais do n8n (contém credenciais criptografadas)
+.n8n/
+n8n-data/
+
+# Modelos e caches pesados
+models/
+.docling-cache/
+ollama-data/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+
+# Saídas de avaliação são commitadas, mas não os temporários
+docs/evidence/*.tmp
+
+# Sistema
+.DS_Store
+*.swp
