@@ -698,11 +698,236 @@ return [{ json: { ok: false, problems: r.problems, chat_id: r.chat_id, file_name
         "settings": {"executionOrder": "v1"},
     }
 
-if __name__ == "__main__":
-    write(OUTPUT, build())
 
     write(SMOKE_OUTPUT, build_smoke())
 
     write(INGEST_OUTPUT, build_ingest())
 
     write(INGEST_SMOKE_OUTPUT, build_ingest_smoke())
+
+
+# ─── 03 — Consulta processual no DataJud (Estágio 2) ────────────────────────
+
+LOOKUP_ID = "processolookup01"
+LOOKUP_OUTPUT = ROOT / "workflows" / "03-processo-lookup.json"
+LOOKUP_SMOKE_OUTPUT = ROOT / "tests" / "workflows" / "97-lookup-smoke.json"
+
+LOOKUP_PREPARE = """
+// O DataJud consulta pelo numero sem pontuacao, e o indice e derivado do
+// proprio numero (segmentos J e TR). Sem alias, o segmento nao e Justica
+// Estadual e esta fora da cobertura — dizemos isso em vez de chutar um indice.
+const input = $input.first().json;
+const number = String(input.cnj_number || '');
+const alias = input.datajud_alias || '';
+const digits = number.replace(/\\D/g, '');
+
+if (digits.length !== 20) {
+  return [{ json: { skip: true, status: 'invalid_number', cnj_number: number } }];
+}
+if (!alias) {
+  return [{ json: { skip: true, status: 'out_of_coverage', cnj_number: number } }];
+}
+
+return [{ json: {
+  skip: false,
+  cnj_number: number,
+  digits,
+  alias,
+  url: `${$env.DATAJUD_BASE_URL}/${alias}/_search`,
+} }];
+"""
+
+LOOKUP_INTERPRET = """
+const prepared = $('Preparar consulta').first().json;
+const analysis = $input.first().json;
+
+// Sigilo nao e ausencia de risco: e ausencia de informacao, e a resposta
+// precisa dizer isso com essas letras em vez de silenciar.
+if (!analysis.found) {
+  return [{ json: {
+    found: false,
+    status: analysis.reason || 'not_found',
+    cnj_number: prepared.cnj_number,
+    court_alias: prepared.alias,
+    needs_summary: false,
+  } }];
+}
+
+const sealed = Number(analysis.nivel_sigilo || 0) > 0;
+
+return [{ json: {
+  found: true,
+  status: sealed ? 'sealed' : 'ok',
+  cnj_number: prepared.cnj_number,
+  court_alias: prepared.alias,
+  analysis,
+  // Sem sinal ativo nao ha o que resumir: gastar uma chamada de LLM para
+  // dizer "nada de relevante" e desperdicio, e a ficha ja carrega os dados.
+  needs_summary: !sealed && (analysis.active_signals || []).length > 0,
+} }];
+"""
+
+LOOKUP_SUMMARIZE = """
+const interpreted = $('Classificar resultado').first().json;
+const systemPrompt = $('Buscar prompt de resumo').first().json.text;
+
+return [{ json: {
+  role: 'qa',
+  system: systemPrompt,
+  expectJson: true,
+  maxTokens: Number($env.LLM_QA_MAX_TOKENS || 4096),
+  messages: [{ role: 'user', content:
+    'MOVIMENTOS E SINAIS:\\n' + JSON.stringify(interpreted.analysis, null, 2) }],
+} }];
+"""
+
+LOOKUP_RESULT = """
+const interpreted = $('Classificar resultado').first().json;
+const gateway = interpreted.needs_summary ? $('Resumir risco').first().json : null;
+
+const summary = gateway && gateway.parsed ? gateway.parsed : {
+  summary: interpreted.found
+    ? 'Nenhum movimento recente indica risco para a arrematacao.'
+    : 'Nao foi possivel obter a situacao processual.',
+  signals: interpreted.found ? (interpreted.analysis.active_signals || []) : [],
+  confidence: interpreted.found ? 'medium' : 'low',
+};
+
+return [{ json: {
+  cnj_number: interpreted.cnj_number,
+  court_alias: interpreted.court_alias,
+  status: interpreted.status,
+  found: interpreted.found,
+  analysis: interpreted.analysis || null,
+  summary,
+} }];
+"""
+
+
+def build_lookup() -> dict:
+    """Estágio 2: situação processual pública, quando há processo identificado.
+
+    Só dispara com número CNJ válido. É o único campo do edital conferível
+    contra fonte externa, e o gancho natural de `v0.6-agente`: consultar o
+    processo vira uma ferramenta que o agente decide chamar.
+    """
+    nodes = [
+        node("Chamada de outro fluxo", "n8n-nodes-base.executeWorkflowTrigger", 1.2,
+             [0, 0], {"inputSource": "passthrough"}),
+        node("Preparar consulta", "n8n-nodes-base.code", 2, [200, 0], {"jsCode": LOOKUP_PREPARE}),
+        node("Consultar DataJud", "n8n-nodes-base.httpRequest", 4.5, [400, 0], {
+            "method": "POST",
+            "url": "={{ $json.url }}",
+            "sendHeaders": True,
+            "specifyHeaders": "json",
+            "jsonHeaders": '={{ JSON.stringify({ "Authorization": "APIKey " + $env.DATAJUD_API_KEY }) }}',
+            "sendBody": True,
+            "specifyBody": "json",
+            "jsonBody": '={{ JSON.stringify({ query: { match: { numeroProcesso: $json.digits } } }) }}',
+            "options": {"timeout": 60000},
+        }, onError="continueRegularOutput"),
+        node("Interpretar movimentos", "n8n-nodes-base.httpRequest", 4.5, [600, 0], {
+            "method": "POST",
+            "url": "={{ $env.DOCLING_URL }}/movements/analyze",
+            "sendBody": True,
+            "specifyBody": "json",
+            "jsonBody": "={{ JSON.stringify({ source: $json }) }}",
+            "options": {"timeout": 60000},
+        }, onError="continueRegularOutput"),
+        node("Classificar resultado", "n8n-nodes-base.code", 2, [800, 0],
+             {"jsCode": LOOKUP_INTERPRET}),
+        node("Precisa de resumo?", "n8n-nodes-base.if", 2.3, [1000, 0], {
+            "conditions": {
+                "options": {"caseSensitive": True, "typeValidation": "strict", "version": 2},
+                "conditions": [{
+                    "id": "needs",
+                    "operator": {"type": "boolean", "operation": "true", "singleValue": True},
+                    "leftValue": "={{ $json.needs_summary }}",
+                    "rightValue": "",
+                }],
+                "combinator": "and",
+            },
+            "options": {},
+        }),
+        node("Buscar prompt de resumo", "n8n-nodes-base.httpRequest", 4.5, [1200, -110], {
+            "url": "={{ $env.DOCLING_URL }}/prompt/processo-summary",
+            "options": {"timeout": 30000},
+        }),
+        node("Preparar resumo", "n8n-nodes-base.code", 2, [1400, -110],
+             {"jsCode": LOOKUP_SUMMARIZE}),
+        node("Resumir risco", "n8n-nodes-base.executeWorkflow", 1.3, [1600, -110], {
+            "workflowId": {"__rl": True, "value": GATEWAY_ID, "mode": "id"},
+            "options": {"waitForSubWorkflow": True},
+        }),
+        node("Resultado com resumo", "n8n-nodes-base.code", 2, [1800, -110],
+             {"jsCode": LOOKUP_RESULT}),
+        node("Resultado sem resumo", "n8n-nodes-base.code", 2, [1200, 110],
+             {"jsCode": LOOKUP_RESULT}),
+    ]
+
+    connections = {
+        "Chamada de outro fluxo": {"main": [[{"node": "Preparar consulta", "type": "main", "index": 0}]]},
+        "Preparar consulta": {"main": [[{"node": "Consultar DataJud", "type": "main", "index": 0}]]},
+        "Consultar DataJud": {"main": [[{"node": "Interpretar movimentos", "type": "main", "index": 0}]]},
+        "Interpretar movimentos": {"main": [[{"node": "Classificar resultado", "type": "main", "index": 0}]]},
+        "Classificar resultado": {"main": [[{"node": "Precisa de resumo?", "type": "main", "index": 0}]]},
+        "Precisa de resumo?": {"main": [
+            [{"node": "Buscar prompt de resumo", "type": "main", "index": 0}],
+            [{"node": "Resultado sem resumo", "type": "main", "index": 0}],
+        ]},
+        "Buscar prompt de resumo": {"main": [[{"node": "Preparar resumo", "type": "main", "index": 0}]]},
+        "Preparar resumo": {"main": [[{"node": "Resumir risco", "type": "main", "index": 0}]]},
+        "Resumir risco": {"main": [[{"node": "Resultado com resumo", "type": "main", "index": 0}]]},
+    }
+
+    return {
+        "id": LOOKUP_ID,
+        "name": "03 - Consulta processual (DataJud)",
+        "nodes": nodes,
+        "connections": connections,
+        "settings": {"executionOrder": "v1"},
+    }
+
+
+def build_lookup_smoke() -> dict:
+    """Consulta o processo do edital de exemplo, sem depender da ingestão."""
+    payload = """
+// Dois casos, para exercitar os dois ramos do fluxo:
+//  - o processo do edital em data/editais/: sem sinal ativo, resposta sem LLM
+//  - uma execucao com embargos recentes: dispara o resumo de risco
+return [
+  { json: { cnj_number: '1002465-53.2023.8.26.0100', datajud_alias: 'api_publica_tjsp' } },
+  { json: { cnj_number: '4001238-08.2025.8.26.0358', datajud_alias: 'api_publica_tjsp' } },
+];
+"""
+    nodes = [
+        node("Disparo manual", "n8n-nodes-base.manualTrigger", 1, [0, 0], {}),
+        node("Processo do edital", "n8n-nodes-base.code", 2, [200, 0], {"jsCode": payload}),
+        node("Chamar consulta", "n8n-nodes-base.executeWorkflow", 1.3, [400, 0], {
+            "workflowId": {"__rl": True, "value": LOOKUP_ID, "mode": "id"},
+            # `each`: o sub-fluxo trata um processo por execucao, entao com o
+            # modo `once` (padrao) so o primeiro item seria consultado.
+            "mode": "each",
+            "options": {"waitForSubWorkflow": True},
+        }),
+    ]
+    connections = {
+        "Disparo manual": {"main": [[{"node": "Processo do edital", "type": "main", "index": 0}]]},
+        "Processo do edital": {"main": [[{"node": "Chamar consulta", "type": "main", "index": 0}]]},
+    }
+    return {
+        "id": "lookupsmoke00001",
+        "name": "97 - Smoke test da consulta processual",
+        "nodes": nodes,
+        "connections": connections,
+        "settings": {"executionOrder": "v1"},
+    }
+
+
+if __name__ == "__main__":
+    write(OUTPUT, build())
+    write(SMOKE_OUTPUT, build_smoke())
+    write(INGEST_OUTPUT, build_ingest())
+    write(INGEST_SMOKE_OUTPUT, build_ingest_smoke())
+    write(LOOKUP_OUTPUT, build_lookup())
+    write(LOOKUP_SMOKE_OUTPUT, build_lookup_smoke())

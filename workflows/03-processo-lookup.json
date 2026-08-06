@@ -1,0 +1,309 @@
+{
+  "id": "processolookup01",
+  "name": "03 - Consulta processual (DataJud)",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "chamada-de-outro-fluxo",
+      "name": "Chamada de outro fluxo",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// O DataJud consulta pelo numero sem pontuacao, e o indice e derivado do\n// proprio numero (segmentos J e TR). Sem alias, o segmento nao e Justica\n// Estadual e esta fora da cobertura — dizemos isso em vez de chutar um indice.\nconst input = $input.first().json;\nconst number = String(input.cnj_number || '');\nconst alias = input.datajud_alias || '';\nconst digits = number.replace(/\\D/g, '');\n\nif (digits.length !== 20) {\n  return [{ json: { skip: true, status: 'invalid_number', cnj_number: number } }];\n}\nif (!alias) {\n  return [{ json: { skip: true, status: 'out_of_coverage', cnj_number: number } }];\n}\n\nreturn [{ json: {\n  skip: false,\n  cnj_number: number,\n  digits,\n  alias,\n  url: `${$env.DATAJUD_BASE_URL}/${alias}/_search`,\n} }];\n"
+      },
+      "id": "preparar-consulta",
+      "name": "Preparar consulta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json.url }}",
+        "sendHeaders": true,
+        "specifyHeaders": "json",
+        "jsonHeaders": "={{ JSON.stringify({ \"Authorization\": \"APIKey \" + $env.DATAJUD_API_KEY }) }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ query: { match: { numeroProcesso: $json.digits } } }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "consultar-datajud",
+      "name": "Consultar DataJud",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        400,
+        0
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DOCLING_URL }}/movements/analyze",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ source: $json }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "interpretar-movimentos",
+      "name": "Interpretar movimentos",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        600,
+        0
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst prepared = $('Preparar consulta').first().json;\nconst analysis = $input.first().json;\n\n// Sigilo nao e ausencia de risco: e ausencia de informacao, e a resposta\n// precisa dizer isso com essas letras em vez de silenciar.\nif (!analysis.found) {\n  return [{ json: {\n    found: false,\n    status: analysis.reason || 'not_found',\n    cnj_number: prepared.cnj_number,\n    court_alias: prepared.alias,\n    needs_summary: false,\n  } }];\n}\n\nconst sealed = Number(analysis.nivel_sigilo || 0) > 0;\n\nreturn [{ json: {\n  found: true,\n  status: sealed ? 'sealed' : 'ok',\n  cnj_number: prepared.cnj_number,\n  court_alias: prepared.alias,\n  analysis,\n  // Sem sinal ativo nao ha o que resumir: gastar uma chamada de LLM para\n  // dizer \"nada de relevante\" e desperdicio, e a ficha ja carrega os dados.\n  needs_summary: !sealed && (analysis.active_signals || []).length > 0,\n} }];\n"
+      },
+      "id": "classificar-resultado",
+      "name": "Classificar resultado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "needs",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.needs_summary }}",
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "precisa-de-resumo?",
+      "name": "Precisa de resumo?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1000,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.DOCLING_URL }}/prompt/processo-summary",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "buscar-prompt-de-resumo",
+      "name": "Buscar prompt de resumo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1200,
+        -110
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst interpreted = $('Classificar resultado').first().json;\nconst systemPrompt = $('Buscar prompt de resumo').first().json.text;\n\nreturn [{ json: {\n  role: 'qa',\n  system: systemPrompt,\n  expectJson: true,\n  maxTokens: Number($env.LLM_QA_MAX_TOKENS || 4096),\n  messages: [{ role: 'user', content:\n    'MOVIMENTOS E SINAIS:\\n' + JSON.stringify(interpreted.analysis, null, 2) }],\n} }];\n"
+      },
+      "id": "preparar-resumo",
+      "name": "Preparar resumo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1400,
+        -110
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "llmgateway0000001",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "resumir-risco",
+      "name": "Resumir risco",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1600,
+        -110
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst interpreted = $('Classificar resultado').first().json;\nconst gateway = interpreted.needs_summary ? $('Resumir risco').first().json : null;\n\nconst summary = gateway && gateway.parsed ? gateway.parsed : {\n  summary: interpreted.found\n    ? 'Nenhum movimento recente indica risco para a arrematacao.'\n    : 'Nao foi possivel obter a situacao processual.',\n  signals: interpreted.found ? (interpreted.analysis.active_signals || []) : [],\n  confidence: interpreted.found ? 'medium' : 'low',\n};\n\nreturn [{ json: {\n  cnj_number: interpreted.cnj_number,\n  court_alias: interpreted.court_alias,\n  status: interpreted.status,\n  found: interpreted.found,\n  analysis: interpreted.analysis || null,\n  summary,\n} }];\n"
+      },
+      "id": "resultado-com-resumo",
+      "name": "Resultado com resumo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1800,
+        -110
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst interpreted = $('Classificar resultado').first().json;\nconst gateway = interpreted.needs_summary ? $('Resumir risco').first().json : null;\n\nconst summary = gateway && gateway.parsed ? gateway.parsed : {\n  summary: interpreted.found\n    ? 'Nenhum movimento recente indica risco para a arrematacao.'\n    : 'Nao foi possivel obter a situacao processual.',\n  signals: interpreted.found ? (interpreted.analysis.active_signals || []) : [],\n  confidence: interpreted.found ? 'medium' : 'low',\n};\n\nreturn [{ json: {\n  cnj_number: interpreted.cnj_number,\n  court_alias: interpreted.court_alias,\n  status: interpreted.status,\n  found: interpreted.found,\n  analysis: interpreted.analysis || null,\n  summary,\n} }];\n"
+      },
+      "id": "resultado-sem-resumo",
+      "name": "Resultado sem resumo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        110
+      ]
+    }
+  ],
+  "connections": {
+    "Chamada de outro fluxo": {
+      "main": [
+        [
+          {
+            "node": "Preparar consulta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar consulta": {
+      "main": [
+        [
+          {
+            "node": "Consultar DataJud",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar DataJud": {
+      "main": [
+        [
+          {
+            "node": "Interpretar movimentos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Interpretar movimentos": {
+      "main": [
+        [
+          {
+            "node": "Classificar resultado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classificar resultado": {
+      "main": [
+        [
+          {
+            "node": "Precisa de resumo?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Precisa de resumo?": {
+      "main": [
+        [
+          {
+            "node": "Buscar prompt de resumo",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Resultado sem resumo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar prompt de resumo": {
+      "main": [
+        [
+          {
+            "node": "Preparar resumo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar resumo": {
+      "main": [
+        [
+          {
+            "node": "Resumir risco",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resumir risco": {
+      "main": [
+        [
+          {
+            "node": "Resultado com resumo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

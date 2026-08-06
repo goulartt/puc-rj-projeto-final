@@ -36,7 +36,7 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 sys.path.insert(0, "/app/lib")
-from extractors import cnj  # noqa: E402
+from extractors import cnj, movements  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("docling-service")
@@ -189,6 +189,27 @@ def extract(payload: dict = Body(...)) -> JSONResponse:
             "candidates": [n.to_dict() for n in all_numbers],
         }
     )
+
+
+@app.post("/movements/analyze")
+def analyze_movements(payload: dict = Body(...)) -> JSONResponse:
+    """Traduz a resposta do DataJud em sinais de risco para quem arremata.
+
+    Aceita tanto a resposta crua da API (`hits.hits[0]._source`) quanto o
+    `_source` já extraído, porque o fluxo do n8n passa uma e os testes passam a
+    outra.
+    """
+    source = payload.get("source") or payload
+    if "hits" in source:
+        hits = (source.get("hits") or {}).get("hits") or []
+        if not hits:
+            return JSONResponse({"found": False, "reason": "not_found"})
+        source = hits[0].get("_source") or {}
+
+    if not source.get("movimentos") and not source.get("classe"):
+        return JSONResponse({"found": False, "reason": "not_found"})
+
+    return JSONResponse({"found": True, **movements.analyze(source)})
 
 
 @app.post("/validate")

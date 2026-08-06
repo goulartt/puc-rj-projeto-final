@@ -1,0 +1,78 @@
+{
+  "id": "lookupsmoke00001",
+  "name": "97 - Smoke test da consulta processual",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "disparo-manual",
+      "name": "Disparo manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Dois casos, para exercitar os dois ramos do fluxo:\n//  - o processo do edital em data/editais/: sem sinal ativo, resposta sem LLM\n//  - uma execucao com embargos recentes: dispara o resumo de risco\nreturn [\n  { json: { cnj_number: '1002465-53.2023.8.26.0100', datajud_alias: 'api_publica_tjsp' } },\n  { json: { cnj_number: '4001238-08.2025.8.26.0358', datajud_alias: 'api_publica_tjsp' } },\n];\n"
+      },
+      "id": "processo-do-edital",
+      "name": "Processo do edital",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "processolookup01",
+          "mode": "id"
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "chamar-consulta",
+      "name": "Chamar consulta",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        400,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Disparo manual": {
+      "main": [
+        [
+          {
+            "node": "Processo do edital",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Processo do edital": {
+      "main": [
+        [
+          {
+            "node": "Chamar consulta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
