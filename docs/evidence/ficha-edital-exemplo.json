@@ -1,0 +1,284 @@
+{
+  "_meta": {
+    "edital": "data/editais/edital-exemplo.pdf",
+    "gerado_em": "2026-08-05",
+    "produzido_por": "Claude Code, executando prompts/analyst-extraction.md manualmente durante o desenvolvimento",
+    "observacao": "Ficha de referência. Serve para validar o prompt e o schema antes de o gateway existir, e depois como gabarito para medir a acurácia da extração automática na Fase 7.",
+    "dados_pessoais": "Os CPFs dos executados constam do edital e foram deliberadamente omitidos: a ficha guarda risco procedimental, não dado pessoal."
+  },
+  "procedure": {
+    "type": "judicial",
+    "quote": "EDITAL DE LEILÃO JUDICIAL [...] expedido nos autos da Ação DE EXECUÇÃO, em trâmite na 15ª Vara Cível do Foro Central, Comarca de São Paulo/SP",
+    "confidence": "high",
+    "source": "both"
+  },
+  "court_case": {
+    "number": "1002465-53.2023.8.26.0100",
+    "valid": true,
+    "court": "TJSP",
+    "datajud_alias": "api_publica_tjsp",
+    "court_division": {
+      "value": "15ª Vara Cível do Foro Central, Comarca de São Paulo/SP",
+      "quote": "em trâmite na 15ª Vara Cível do Foro Central, Comarca de São Paulo/SP",
+      "confidence": "high",
+      "source": "llm"
+    },
+    "creditor": {
+      "value": "CONDOMÍNIO EDIFÍCIO CHARMANT (CNPJ 65.519.878/0001-83)",
+      "quote": "ajuizada por CONDOMÍNIO EDIFÍCIO CHARMANT (CNPJ 65.519.878/0001-83) em face de ANTONIO JOSÉ DE ALMEIDA e outro",
+      "confidence": "high",
+      "source": "llm"
+    },
+    "cited_numbers": [
+      "2132770-30.2017.8.26.0000",
+      "2132317-30.2020.8.26.0000",
+      "2028406-02.2020.8.26.0000",
+      "2143178-41.2021.8.26.0000"
+    ],
+    "status": null
+  },
+  "property": {
+    "type": {
+      "value": "Apartamento nº 144, 14º andar, Edifício Charmant",
+      "quote": "Apartamento nº 144, no 14º andar do 'Edifício Charmant'",
+      "confidence": "high",
+      "source": "llm"
+    },
+    "address": {
+      "value": "Av. Dr. Cardoso de Melo, nº 146, 28º Subdistrito - Jardim Paulista, São Paulo/SP",
+      "quote": "sito à Av. Dr. Cardoso de Melo, nº 146, no 28º Subdistrito-Jardim Paulista",
+      "confidence": "high",
+      "source": "llm"
+    },
+    "registry_number": {
+      "value": "106.233",
+      "quote": "objeto da matrícula nº 106.233 do 4º Cartório de Registro de Imóveis da Capital/SP",
+      "confidence": "high",
+      "source": "llm"
+    },
+    "registry_office": {
+      "value": "4º Cartório de Registro de Imóveis da Capital/SP",
+      "quote": "do 4º Cartório de Registro de Imóveis da Capital/SP",
+      "confidence": "high",
+      "source": "llm"
+    },
+    "municipal_id": {
+      "value": "299.111.0403-4",
+      "quote": "Contribuinte nº 299.111.0403-4",
+      "confidence": "high",
+      "source": "llm"
+    },
+    "private_area_m2": {
+      "value": 66.02,
+      "quote": "com a área real privativa de 66,02m²",
+      "confidence": "high",
+      "source": "llm"
+    },
+    "total_area_m2": {
+      "value": 110.567,
+      "quote": "área real total de 110,567m²",
+      "confidence": "high",
+      "source": "llm"
+    },
+    "parking_space": {
+      "value": "direito ao uso de uma vaga indeterminada na garagem coletiva",
+      "quote": "o direito ao uso de uma vaga indeterminada na garagem coletiva do edifício",
+      "confidence": "high",
+      "source": "llm"
+    }
+  },
+  "auction": {
+    "portal": {
+      "value": "www.nrnleiloes.com.br",
+      "quote": "O Leilão será realizado por MEIO ELETRÔNICO, através do portal WWW.NRNLEILOES.COM.BR",
+      "confidence": "high",
+      "source": "llm"
+    },
+    "auctioneer": {
+      "value": "Helio Deutsch de Freitas Braga (JUCESP nº 798)",
+      "quote": "conduzido pelo Leiloeiro Oficial Sr. Helio Deutsch de Freitas Braga, matriculado na Junta Comercial do Estado de São Paulo -JUCESP sob o nº 798",
+      "confidence": "high",
+      "source": "llm"
+    },
+    "first_round": {
+      "starts_at": "2026-07-20T14:00:00-03:00",
+      "ends_at": "2026-07-23T14:00:00-03:00",
+      "minimum_bid": {
+        "amount_brl": 800933.79,
+        "reference_date": "2026-06-30",
+        "quote": "somente serão aceitos lances iguais ou superiores ao valor da avaliação",
+        "confidence": "medium",
+        "source": "derived"
+      },
+      "criterion": "igual ou superior ao valor da avaliação",
+      "quote": "tendo o 1º Leilão início no dia 20/07/2026 às 14h00, e se encerrará dia 23/07/2026 às 14h00"
+    },
+    "second_round": {
+      "starts_at": "2026-07-23T14:01:00-03:00",
+      "ends_at": "2026-08-26T14:00:00-03:00",
+      "minimum_bid": {
+        "amount_brl": 480560.27,
+        "reference_date": "2026-06-30",
+        "quote": "serão aceitos lances com no mínimo 60% (sessenta por cento) do valor da avaliação",
+        "confidence": "low",
+        "source": "derived"
+      },
+      "criterion": "60% do valor da avaliação, que será atualizada até a data de início da alienação",
+      "quote": "o 2º Leilão, que terá início no dia 23/07/2026 às 14h01, e se encerrará no dia 26/08/2026 às 14h00"
+    }
+  },
+  "appraisal": {
+    "value": {
+      "amount_brl": 772545.0,
+      "reference_date": "2025-10-01",
+      "quote": "VALOR DA AVALIAÇÃO: R$ 772.545,00 (outubro/2025)",
+      "confidence": "high",
+      "source": "both"
+    },
+    "updated_value": {
+      "amount_brl": 800933.79,
+      "reference_date": "2026-06-30",
+      "quote": "Valor da Avaliação atualizado até junho de 2026: R$ 800.933,79",
+      "confidence": "high",
+      "source": "both"
+    },
+    "note": "O edital declara que o valor será novamente atualizado até a data de início da alienação, pela tabela do TJ/SP. Os lances mínimos calculados nesta ficha usam a base de junho/2026 e ficarão desatualizados."
+  },
+  "occupancy": {
+    "status": "not_informed",
+    "occupied_by": null,
+    "quote": "e de intimação dos executados [...] eventuais ocupantes do imóvel abaixo e demais interessados",
+    "confidence": "high",
+    "source": "llm"
+  },
+  "encumbrances": [
+    {
+      "type": "hipoteca",
+      "registry_entry": "R.02",
+      "creditor": "Banco Bradesco S/A",
+      "extinguished_by_sale": true,
+      "quote": "DOS ÔNUS HIPOTECÁRIOS: A hipoteca extingue-se com a arrematação, assim, nada será devido pelo arrematante ao credor hipotecário (Art. 1499, VI do Código Civil)."
+    },
+    {
+      "type": "penhora",
+      "registry_entry": "Av.03",
+      "creditor": "Condomínio Edifício Charmant (exequente)",
+      "extinguished_by_sale": null,
+      "quote": "ÔNUS: Consta conforme R.02, hipoteca em favor de Banco Bradesco S/A, e; Conforme Av.03, a penhora exequenda."
+    }
+  ],
+  "debts": {
+    "property_tax": {
+      "amount_brl": 1548.15,
+      "reference_date": "2026-06-15",
+      "quote": "Débitos fiscais (IPTU e taxas) que já constam em Dívida Ativa, referentes a Exercícios Anteriores: R$ 293,19 até 15/06/2026. Débitos fiscais (IPTU e taxas) referentes ao Exercício Atual: R$ 1.254,96 até 15/06/2026.",
+      "confidence": "medium",
+      "source": "derived"
+    },
+    "condo_fees": {
+      "amount_brl": null,
+      "reference_date": null,
+      "quote": "",
+      "confidence": "high",
+      "source": "llm"
+    },
+    "enforced_claim": {
+      "amount_brl": 75708.24,
+      "reference_date": "2026-06-30",
+      "quote": "CRÉDITO EXECUTADO: Débitos desta ação no valor de R$ 75.708,24 em junho de 2026.",
+      "confidence": "high",
+      "source": "both"
+    },
+    "buyer_liability": {
+      "value": "O edital se contradiz e resolve a própria contradição: primeiro atribui os ônus ao arrematante 'exceto débitos de IPTU', invocando o art. 130 do CTN; em seguida cita o Tema 1134 do STJ para afirmar que é inválida a previsão que responsabiliza o arrematante por tributos anteriores à arrematação. Débitos de condomínio ficam sub-rogados no preço.",
+      "quote": "Eventuais ônus sobre o imóvel correrão por conta do arrematante, exceto débitos de IPTU e demais taxas e impostos, nos termos do art. 130 [...] e exceto os débitos de condomínio (que possuem natureza propter rem), os quais ficam sub-rogados no preço da arrematação [...] ou seja, o arrematante não será responsável pelos débitos tributários anteriores à arrematação.",
+      "confidence": "medium",
+      "source": "llm"
+    }
+  },
+  "auctioneer_fee": {
+    "value": "5% sobre o preço de arrematação, pago pelo arrematante, em até 24h",
+    "quote": "o arrematante deverá pagar ao leiloeiro, a título de comissão, o valor correspondente a 5% (cinco por cento) sobre o preço de arrematação do imóvel. A comissão devida ao leiloeiro não está incluída no valor do lance",
+    "confidence": "high",
+    "source": "both"
+  },
+  "payment": {
+    "cash_deadline": {
+      "value": "24 horas após o encerramento do leilão, por guia de depósito judicial",
+      "quote": "O arrematante deverá efetuar o pagamento do preço do bem arrematado, ou da entrada [...] no prazo de até 24h (vinte e quatro) horas após o encerramento do leilão, através de guia de depósito judicial [...] sob pena de se desfazer a arrematação.",
+      "confidence": "high",
+      "source": "llm"
+    },
+    "installments_allowed": {
+      "value": true,
+      "quote": "Os interessados deverão apresentar propostas escritas de arrematação de forma parcelada, obrigatoriamente encaminhadas via sistema do site",
+      "confidence": "high",
+      "source": "llm"
+    },
+    "installment_terms": {
+      "value": "Mínimo de 25% à vista; saldo em até 30 meses, garantido por hipoteca do próprio bem. Lance à vista prevalece sobre proposta parcelada.",
+      "quote": "A proposta, em qualquer hipótese, conterá pelo menos 25% do valor atualizado do bem para pagamento à vista, o saldo do lance deverá ser pago em até 30 meses, garantido por hipoteca do próprio bem",
+      "confidence": "high",
+      "source": "llm"
+    }
+  },
+  "risks": [
+    {
+      "description": "O edital não declara se o imóvel está ocupado, e ao mesmo tempo atribui ao arrematante o custo e o trabalho da imissão na posse. Se houver ocupante, a desocupação corre por conta e risco de quem arrematar, em prazo desconhecido.",
+      "severity": "high",
+      "quote": "Despesas gerais relativas à desmontagem, transporte e transferência patrimonial do bem arrematado, baixa de gravames e imissão na posse serão de responsabilidade do arrematante, junto ao MM. Juízo da causa"
+    },
+    {
+      "description": "Há débito de condomínio reconhecido pelo edital, sub-rogado no preço, mas sem valor declarado. Como a execução é movida pelo próprio condomínio e o crédito executado é de R$ 75.708,24, a ordem de grandeza é relevante frente à avaliação — mas o montante exato precisa ser apurado.",
+      "severity": "high",
+      "quote": "exceto os débitos de condomínio (que possuem natureza propter rem), os quais ficam sub-rogados no preço da arrematação (conforme decisão Evento 189 e Art. 908, § 1º do Código de Processo Civil)"
+    },
+    {
+      "description": "Venda ad corpus e no estado em que se encontra, sem garantia. Área, estado de conservação e conformidade do imóvel são risco do comprador, que deve verificar antes do leilão.",
+      "severity": "medium",
+      "quote": "O imóvel será vendido em caráter 'AD CORPUS' e no estado em que se encontra, sem garantia, constituindo ônus da parte interessada verificar suas condições antes das datas designadas"
+    },
+    {
+      "description": "Prazo de pagamento de 24 horas após o encerramento, sob pena de desfazimento da arrematação. Exige recursos disponíveis de imediato, não financiamento a contratar.",
+      "severity": "medium",
+      "quote": "no prazo de até 24h (vinte e quatro) horas após o encerramento do leilão [...] sob pena de se desfazer a arrematação"
+    },
+    {
+      "description": "O lance mínimo real não é conhecido hoje: a avaliação será atualizada pela tabela do TJ/SP até a data de início da alienação. Os valores desta ficha usam a base de junho/2026.",
+      "severity": "medium",
+      "quote": "que será atualizado até a data do início da alienação conforme tabela de atualização monetária do TJ/SP"
+    },
+    {
+      "description": "Regularizações registrais e cadastrais ficam com o arrematante. O edital registra que o credor hipotecário informou estar o contrato quitado, o que sugere baixa de hipoteca ainda pendente no registro.",
+      "severity": "low",
+      "quote": "Conforme informado pelo credor hipotecário, Banco Bradesco S/A, o contrato de hipoteca encontra-se devidamente quitado (Evento 185). Eventuais regularizações registrais e cadastrais serão de responsabilidade do Arrematante."
+    }
+  ],
+  "gaps": [
+    {
+      "field": "ocupacao.situacao",
+      "why_it_matters": "Determina se haverá ação de desocupação após a arrematação, com custo e prazo que o edital transfere ao comprador. É a diferença entre entrar no imóvel em semanas ou em anos.",
+      "how_to_verify": "Visita ao endereço, consulta aos autos do processo 1002465-53.2023.8.26.0100 na 15ª Vara Cível do Foro Central/SP, ou pergunta ao leiloeiro por escrito."
+    },
+    {
+      "field": "debitos.condominio",
+      "why_it_matters": "O edital reconhece a existência do débito e o sub-roga no preço, mas não informa o valor. Sem ele não dá para calcular quanto do lance será consumido antes de sobrar algo ao exequente, nem dimensionar o passivo.",
+      "how_to_verify": "Certidão de débitos junto ao condomínio, ou consulta aos autos da execução."
+    },
+    {
+      "field": "imovel.estado_conservacao",
+      "why_it_matters": "A venda é ad corpus e sem garantia, então reforma e regularização são custo do comprador, e nada disso está no preço mínimo.",
+      "how_to_verify": "Visita ao imóvel e fotos no portal do leiloeiro, que o edital diz estarem publicadas."
+    },
+    {
+      "field": "onus.baixa_da_hipoteca",
+      "why_it_matters": "O edital afirma que a hipoteca se extingue com a arrematação e que o contrato estaria quitado, mas a baixa no registro é responsabilidade do arrematante — trabalho e custo não quantificados.",
+      "how_to_verify": "Matrícula atualizada no 4º Cartório de Registro de Imóveis da Capital/SP."
+    },
+    {
+      "field": "leilao.lance_minimo_efetivo",
+      "why_it_matters": "O piso da segunda praça é 60% de uma avaliação que ainda será corrigida. O valor de R$ 480.560,27 desta ficha é derivado da base de junho/2026 e não é o número que valerá no dia.",
+      "how_to_verify": "Portal do leiloeiro na abertura do leilão, ou tabela de atualização monetária do TJ/SP."
+    }
+  ]
+}

@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/puc-rj/leilao-assistente/schemas/ficha.schema.json",
+  "title": "Ficha de análise de edital de leilão de imóvel",
+  "description": "Contrato de saída do Estágio 1. Todo campo carrega o trecho do edital que o sustenta, para que qualquer resposta do assistente possa citar a origem. Campo que o edital não informa vai para `gaps` — nunca é inferido em silêncio.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["procedure", "property", "auction", "appraisal", "occupancy", "encumbrances", "debts", "risks", "gaps"],
+
+  "$defs": {
+    "field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value", "quote", "confidence", "source"],
+      "properties": {
+        "value": {
+          "description": "O dado extraído. null quando o edital não informa — e nesse caso deve haver entrada correspondente em `gaps`.",
+          "type": ["string", "number", "boolean", "null"]
+        },
+        "quote": {
+          "description": "Citação literal e curta do edital que sustenta o valor. Vazia somente quando `value` é null.",
+          "type": "string",
+          "maxLength": 600
+        },
+        "confidence": {
+          "description": "low quando o determinístico e o modelo divergem, quando o edital é ambíguo, ou quando o valor foi derivado por cálculo.",
+          "enum": ["high", "medium", "low"]
+        },
+        "source": {
+          "description": "Quem produziu o valor. `both` significa que regex e modelo concordaram — o caso de maior confiança.",
+          "enum": ["deterministic", "llm", "both", "derived"]
+        }
+      }
+    },
+
+    "money": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["amount_brl", "quote", "confidence", "source"],
+      "properties": {
+        "amount_brl": { "type": ["number", "null"] },
+        "reference_date": {
+          "description": "Data a que o valor se refere, em ISO-8601. Avaliação e débitos costumam vir datados.",
+          "type": ["string", "null"],
+          "format": "date"
+        },
+        "quote": { "type": "string", "maxLength": 600 },
+        "confidence": { "enum": ["high", "medium", "low"] },
+        "source": { "enum": ["deterministic", "llm", "both", "derived"] }
+      }
+    },
+
+    "auction_round": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["starts_at", "ends_at", "minimum_bid", "quote"],
+      "properties": {
+        "starts_at": { "type": ["string", "null"], "format": "date-time" },
+        "ends_at": { "type": ["string", "null"], "format": "date-time" },
+        "minimum_bid": { "$ref": "#/$defs/money" },
+        "criterion": {
+          "description": "Regra textual do lance mínimo, ex.: '60% do valor da avaliação'.",
+          "type": ["string", "null"]
+        },
+        "quote": { "type": "string", "maxLength": 600 }
+      }
+    }
+  },
+
+  "properties": {
+    "procedure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "quote", "confidence", "source"],
+      "properties": {
+        "type": {
+          "description": "judicial: execução em juízo, com número CNJ. extrajudicial: Lei 9.514/97, alienação fiduciária, sem processo.",
+          "enum": ["judicial", "extrajudicial", "undetermined"]
+        },
+        "quote": { "type": "string", "maxLength": 600 },
+        "confidence": { "enum": ["high", "medium", "low"] },
+        "source": { "enum": ["deterministic", "llm", "both", "derived"] }
+      }
+    },
+
+    "court_case": {
+      "description": "Presente apenas em leilão judicial. O número já vem validado pelo dígito verificador e separado de jurisprudência citada no edital.",
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["number", "valid"],
+      "properties": {
+        "number": { "type": ["string", "null"], "pattern": "^\\d{7}-\\d{2}\\.\\d{4}\\.\\d\\.\\d{2}\\.\\d{4}$" },
+        "valid": { "type": "boolean" },
+        "court": { "type": ["string", "null"] },
+        "datajud_alias": { "type": ["string", "null"] },
+        "court_division": { "$ref": "#/$defs/field" },
+        "creditor": { "$ref": "#/$defs/field" },
+        "cited_numbers": {
+          "description": "Precedentes jurisprudenciais mencionados no edital. Registrados para auditoria e explicitamente NÃO consultados: são causas alheias ao imóvel.",
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "status": {
+          "description": "Preenchido pelo Estágio 2 (DataJud). Ausente até a consulta ocorrer.",
+          "type": ["object", "null"],
+          "additionalProperties": true
+        }
+      }
+    },
+
+    "property": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "address", "registry_number"],
+      "properties": {
+        "type": { "$ref": "#/$defs/field" },
+        "address": { "$ref": "#/$defs/field" },
+        "registry_number": {
+          "description": "Matrícula no Registro de Imóveis. Não confundir com a matrícula do leiloeiro na Junta Comercial, que aparece no mesmo edital.",
+          "$ref": "#/$defs/field"
+        },
+        "registry_office": { "$ref": "#/$defs/field" },
+        "municipal_id": { "$ref": "#/$defs/field" },
+        "private_area_m2": { "$ref": "#/$defs/field" },
+        "total_area_m2": { "$ref": "#/$defs/field" },
+        "parking_space": { "$ref": "#/$defs/field" }
+      }
+    },
+
+    "auction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["first_round", "second_round"],
+      "properties": {
+        "portal": { "$ref": "#/$defs/field" },
+        "auctioneer": { "$ref": "#/$defs/field" },
+        "first_round": { "$ref": "#/$defs/auction_round" },
+        "second_round": { "$ref": "#/$defs/auction_round" }
+      }
+    },
+
+    "appraisal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["value"],
+      "properties": {
+        "value": { "$ref": "#/$defs/money" },
+        "updated_value": { "$ref": "#/$defs/money" },
+        "note": { "type": ["string", "null"] }
+      }
+    },
+
+    "occupancy": {
+      "description": "Um dos campos de maior impacto no risco, e um dos mais frequentemente omitidos. Quando o edital não afirma, o valor é `not_informed` e vai para `gaps` — nunca se presume desocupado.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "quote", "confidence", "source"],
+      "properties": {
+        "status": { "enum": ["occupied", "vacant", "not_informed"] },
+        "occupied_by": { "type": ["string", "null"] },
+        "quote": { "type": "string", "maxLength": 600 },
+        "confidence": { "enum": ["high", "medium", "low"] },
+        "source": { "enum": ["deterministic", "llm", "both", "derived"] }
+      }
+    },
+
+    "encumbrances": {
+      "description": "Gravames registrados na matrícula: hipoteca, penhora, usufruto, indisponibilidade.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "quote"],
+        "properties": {
+          "type": { "type": "string" },
+          "registry_entry": { "description": "Ato na matrícula, ex.: 'R.02', 'Av.03'.", "type": ["string", "null"] },
+          "creditor": { "type": ["string", "null"] },
+          "extinguished_by_sale": {
+            "description": "null quando o edital não se pronuncia. Não inferir da lei: registrar o que o documento diz.",
+            "type": ["boolean", "null"]
+          },
+          "quote": { "type": "string", "maxLength": 600 }
+        }
+      }
+    },
+
+    "debts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "property_tax": { "$ref": "#/$defs/money" },
+        "condo_fees": { "$ref": "#/$defs/money" },
+        "enforced_claim": { "$ref": "#/$defs/money" },
+        "buyer_liability": {
+          "description": "Quem arca com cada débito, conforme o edital. Editais frequentemente atribuem tributos ao arrematante e, no mesmo texto, citam o Tema 1134 do STJ, que invalida essa atribuição. Registre a contradição em vez de escolher um lado.",
+          "$ref": "#/$defs/field"
+        }
+      }
+    },
+
+    "auctioneer_fee": { "$ref": "#/$defs/field" },
+
+    "payment": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cash_deadline": { "$ref": "#/$defs/field" },
+        "installments_allowed": { "$ref": "#/$defs/field" },
+        "installment_terms": { "$ref": "#/$defs/field" }
+      }
+    },
+
+    "risks": {
+      "description": "Sinais que afetam a decisão de dar um lance. Só o que o edital sustenta — não especular.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["description", "severity", "quote"],
+        "properties": {
+          "description": { "type": "string" },
+          "severity": { "enum": ["high", "medium", "low"] },
+          "quote": { "type": "string", "maxLength": 600 }
+        }
+      }
+    },
+
+    "gaps": {
+      "description": "O que o edital NÃO informa. Tão relevante quanto o que informa: é o que a pessoa precisa apurar por conta própria antes de dar um lance.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["field", "why_it_matters"],
+        "properties": {
+          "field": { "type": "string" },
+          "why_it_matters": { "type": "string" },
+          "how_to_verify": { "type": ["string", "null"] }
+        }
+      }
+    }
+  }
+}

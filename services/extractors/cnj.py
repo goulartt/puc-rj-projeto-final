@@ -19,7 +19,7 @@ Formato (Resolução CNJ 65/2008):
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, asdict
+from dataclasses import asdict, dataclass
 from typing import Any
 
 # Aceita o número formatado e também a forma "crua" de 20 dígitos, que aparece
@@ -27,7 +27,7 @@ from typing import Any
 _FORMATTED = re.compile(r"\b(\d{7})-(\d{2})\.(\d{4})\.(\d)\.(\d{2})\.(\d{4})\b")
 _BARE = re.compile(r"(?<!\d)(\d{7})(\d{2})(\d{4})(\d)(\d{2})(\d{4})(?!\d)")
 
-SEGMENTOS = {
+SEGMENTS = {
     "1": "Supremo Tribunal Federal",
     "2": "Conselho Nacional de Justiça",
     "3": "Superior Tribunal de Justiça",
@@ -41,7 +41,7 @@ SEGMENTOS = {
 
 # Justiça Estadual (segmento 8): código do tribunal -> UF.
 # É o segmento que interessa a leilão de imóvel; os demais raramente aparecem.
-TRIBUNAIS_ESTADUAIS = {
+STATE_COURTS = {
     "01": "AC", "02": "AL", "03": "AP", "04": "AM", "05": "BA", "06": "CE",
     "07": "DF", "08": "ES", "09": "GO", "10": "MA", "11": "MT", "12": "MS",
     "13": "MG", "14": "PA", "15": "PB", "16": "PR", "17": "PE", "18": "PI",
@@ -49,71 +49,79 @@ TRIBUNAIS_ESTADUAIS = {
     "25": "SE", "26": "SP", "27": "TO",
 }
 
-
 # Um edital costuma citar jurisprudência no meio do juridiquês. Esses números
 # são de processos alheios ao imóvel: consultá-los enriqueceria a ficha com a
 # situação de outra causa, o que é pior do que não consultar nada.
-_MARCADORES_CITACAO = re.compile(
+_CITATION_MARKERS = re.compile(
     r"agravo|apela[çc][ãa]o|precedent|s[úu]mula|recurso\s+(especial|extraordin[áa]rio)"
     r"|jurisprud|ac[óo]rd[ãa]o|REsp|RE\s+\d",
     re.IGNORECASE,
 )
 
 # Contexto que indica o processo do próprio leilão.
-_MARCADORES_PRINCIPAL = re.compile(
+_MAIN_CASE_MARKERS = re.compile(
     r"processo\s*n|autos|execu[çc][ãa]o|a[çc][ãa]o\s+de|cumprimento\s+de\s+senten[çc]a",
     re.IGNORECASE,
 )
 
 # Quantos caracteres antes do número olhar para classificar.
-_JANELA = 160
+_CONTEXT_WINDOW = 160
+
+FIRST_INSTANCE = "first_instance"
+SECOND_INSTANCE = "second_instance"
+
+ROLE_MAIN = "main"
+ROLE_CITED = "cited"
+ROLE_UNDETERMINED = "undetermined"
 
 
 @dataclass(frozen=True)
-class NumeroCNJ:
-    numero: str          # sempre normalizado no formato com pontuação
-    sequencial: str
-    digito: str
-    ano: str
-    segmento: str
-    tribunal: str
-    origem: str
-    valido: bool         # dígito verificador confere?
-    segmento_nome: str
-    uf: str | None       # só para a Justiça Estadual
+class CNJNumber:
+    number: str          # sempre normalizado no formato com pontuação
+    sequential: str
+    check_digits: str
+    year: str
+    segment: str
+    court: str
+    origin: str
+    valid: bool          # dígito verificador confere?
+    segment_name: str
+    state: str | None    # só para a Justiça Estadual
     datajud_alias: str | None  # índice da API pública, ex.: api_publica_tjrj
-    instancia: str       # 'primeiro_grau' | 'segundo_grau'
-    papel: str           # 'principal' | 'citado' | 'indefinido'
-    contexto: str        # trecho ao redor, para auditoria e para a ficha
+    instance: str        # FIRST_INSTANCE | SECOND_INSTANCE
+    role: str            # ROLE_MAIN | ROLE_CITED | ROLE_UNDETERMINED
+    context: str         # trecho ao redor, para auditoria e para a ficha
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
-def digito_verificador(sequencial: str, ano: str, segmento: str, tribunal: str, origem: str) -> str:
+def compute_check_digits(
+    sequential: str, year: str, segment: str, court: str, origin: str
+) -> str:
     """Calcula o DV pelo módulo 97 base 10 (ISO 7064).
 
     Concatena os campos na ordem NNNNNNN AAAA J TR OOOO, multiplica por 100
     (o mesmo que anexar o campo DD zerado) e o dígito é 98 menos o resto.
     """
-    base = int(f"{sequencial}{ano}{segmento}{tribunal}{origem}") * 100
+    base = int(f"{sequential}{year}{segment}{court}{origin}") * 100
     return f"{98 - (base % 97):02d}"
 
 
-def _alias_datajud(segmento: str, tribunal: str) -> str | None:
+def _datajud_alias(segment: str, court: str) -> str | None:
     """Índice do DataJud correspondente ao tribunal, derivado do próprio número.
 
     Só cobrimos a Justiça Estadual: é onde ocorre a execução que leva o imóvel
     a leilão. Outros segmentos devolvem None e o fluxo trata como fora de
     cobertura, em vez de chutar um índice que não existe.
     """
-    if segmento != "8":
+    if segment != "8":
         return None
-    uf = TRIBUNAIS_ESTADUAIS.get(tribunal)
-    return f"api_publica_tj{uf.lower()}" if uf else None
+    state = STATE_COURTS.get(court)
+    return f"api_publica_tj{state.lower()}" if state else None
 
 
-def _classificar(origem: str, contexto: str) -> tuple[str, str]:
+def _classify(origin: str, context: str) -> tuple[str, str]:
     """Decide instância e papel a partir da origem e do texto que antecede.
 
     A origem `0000` significa que o processo corre no próprio tribunal, ou seja,
@@ -121,68 +129,77 @@ def _classificar(origem: str, contexto: str) -> tuple[str, str]:
     então um número de segundo grau num edital é quase sempre jurisprudência
     citada — e é exatamente esse o caso que precisamos descartar.
     """
-    instancia = "segundo_grau" if origem == "0000" else "primeiro_grau"
+    instance = SECOND_INSTANCE if origin == "0000" else FIRST_INSTANCE
 
-    if instancia == "segundo_grau" or _MARCADORES_CITACAO.search(contexto):
-        return instancia, "citado"
-    if _MARCADORES_PRINCIPAL.search(contexto):
-        return instancia, "principal"
-    return instancia, "indefinido"
+    if instance == SECOND_INSTANCE or _CITATION_MARKERS.search(context):
+        return instance, ROLE_CITED
+    if _MAIN_CASE_MARKERS.search(context):
+        return instance, ROLE_MAIN
+    return instance, ROLE_UNDETERMINED
 
 
-def _montar(seq: str, dv: str, ano: str, seg: str, trib: str, orig: str,
-            contexto: str = "") -> NumeroCNJ:
-    uf = TRIBUNAIS_ESTADUAIS.get(trib) if seg == "8" else None
-    instancia, papel = _classificar(orig, contexto)
-    return NumeroCNJ(
-        numero=f"{seq}-{dv}.{ano}.{seg}.{trib}.{orig}",
-        sequencial=seq, digito=dv, ano=ano, segmento=seg, tribunal=trib, origem=orig,
-        valido=(dv == digito_verificador(seq, ano, seg, trib, orig)),
-        segmento_nome=SEGMENTOS.get(seg, "desconhecido"),
-        uf=uf,
-        datajud_alias=_alias_datajud(seg, trib),
-        instancia=instancia,
-        papel=papel,
-        contexto=contexto.strip(),
+def _build(
+    sequential: str, check: str, year: str, segment: str, court: str, origin: str,
+    context: str = "",
+) -> CNJNumber:
+    state = STATE_COURTS.get(court) if segment == "8" else None
+    instance, role = _classify(origin, context)
+    return CNJNumber(
+        number=f"{sequential}-{check}.{year}.{segment}.{court}.{origin}",
+        sequential=sequential,
+        check_digits=check,
+        year=year,
+        segment=segment,
+        court=court,
+        origin=origin,
+        valid=(check == compute_check_digits(sequential, year, segment, court, origin)),
+        segment_name=SEGMENTS.get(segment, "desconhecido"),
+        state=state,
+        datajud_alias=_datajud_alias(segment, court),
+        instance=instance,
+        role=role,
+        context=context.strip(),
     )
 
 
-def parse(texto: str) -> NumeroCNJ | None:
+def parse(text: str) -> CNJNumber | None:
     """Interpreta uma única string como número CNJ. None se não casar o formato."""
-    m = _FORMATTED.search(texto) or _BARE.search(texto)
-    if not m:
+    match = _FORMATTED.search(text) or _BARE.search(text)
+    if not match:
         return None
-    return _montar(*m.groups(), contexto=texto[max(0, m.start() - _JANELA):m.start()])
+    context = text[max(0, match.start() - _CONTEXT_WINDOW):match.start()]
+    return _build(*match.groups(), context=context)
 
 
-def extrair(texto: str, *, apenas_validos: bool = True) -> list[NumeroCNJ]:
+def extract(text: str, *, valid_only: bool = True) -> list[CNJNumber]:
     """Extrai todos os números CNJ do texto, sem repetição e na ordem de aparição.
 
     Por padrão devolve só os que passam no dígito verificador. Passe
-    ``apenas_validos=False`` para inspecionar candidatos reprovados — útil ao
+    ``valid_only=False`` para inspecionar candidatos reprovados — útil ao
     diagnosticar um edital em que a conversão embaralhou dígitos.
     """
     # Espaços normalizados: o Markdown do Docling quebra linha no meio de
     # frases, e a janela de contexto ficaria truncada sem isso.
-    texto = re.sub(r"\s+", " ", texto)
+    text = re.sub(r"\s+", " ", text)
 
-    achados: list[NumeroCNJ] = []
-    vistos: set[str] = set()
+    found: list[CNJNumber] = []
+    seen: set[str] = set()
 
     for regex in (_FORMATTED, _BARE):
-        for m in regex.finditer(texto):
-            item = _montar(*m.groups(), contexto=texto[max(0, m.start() - _JANELA):m.start()])
-            if item.numero in vistos:
+        for match in regex.finditer(text):
+            context = text[max(0, match.start() - _CONTEXT_WINDOW):match.start()]
+            item = _build(*match.groups(), context=context)
+            if item.number in seen:
                 continue
-            if apenas_validos and not item.valido:
+            if valid_only and not item.valid:
                 continue
-            vistos.add(item.numero)
-            achados.append(item)
+            seen.add(item.number)
+            found.append(item)
 
-    return achados
+    return found
 
 
-def processo_principal(texto: str) -> NumeroCNJ | None:
+def main_case(text: str) -> CNJNumber | None:
     """Devolve o processo do leilão, descartando jurisprudência citada.
 
     Um edital cita precedentes no meio do texto jurídico; consultar esses
@@ -193,10 +210,10 @@ def processo_principal(texto: str) -> NumeroCNJ | None:
     Devolve None quando nada sobra — e aí o fluxo trata como leilão sem
     processo identificável, em vez de escolher um número no chute.
     """
-    candidatos = [n for n in extrair(texto) if n.papel != "citado"]
-    if not candidatos:
+    candidates = [n for n in extract(text) if n.role != ROLE_CITED]
+    if not candidates:
         return None
-    for n in candidatos:
-        if n.papel == "principal":
-            return n
-    return candidatos[0]
+    for candidate in candidates:
+        if candidate.role == ROLE_MAIN:
+            return candidate
+    return candidates[0]

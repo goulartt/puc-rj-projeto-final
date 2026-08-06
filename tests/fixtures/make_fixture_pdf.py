@@ -16,24 +16,24 @@ import zlib
 OUT = pathlib.Path(__file__).parent / "edital-sintetico.pdf"
 
 
-def cnj_check_digits(sequencial: str, ano: str, segmento: str, tribunal: str, origem: str) -> str:
+def cnj_check_digits(sequential: str, year: str, segment: str, court: str, origin: str) -> str:
     """Dígito verificador do número CNJ — módulo 97 base 10 (ISO 7064).
 
     Resolução CNJ 65/2008: concatena NNNNNNN+AAAA+J+TR+OOOO, multiplica por 100
     (equivale a acrescentar o campo DD zerado) e o DV é 98 menos o resto.
     """
-    base = int(f"{sequencial}{ano}{segmento}{tribunal}{origem}") * 100
+    base = int(f"{sequential}{year}{segment}{court}{origin}") * 100
     return f"{98 - (base % 97):02d}"
 
 
-SEQ, ANO, SEG, TRIB, ORIG = "1234567", "2024", "8", "19", "0001"
-DV = cnj_check_digits(SEQ, ANO, SEG, TRIB, ORIG)
-PROCESSO = f"{SEQ}-{DV}.{ANO}.{SEG}.{TRIB}.{ORIG}"
+SEQUENTIAL, YEAR, SEGMENT, COURT, ORIGIN = "1234567", "2024", "8", "19", "0001"
+CHECK = cnj_check_digits(SEQUENTIAL, YEAR, SEGMENT, COURT, ORIGIN)
+CASE_NUMBER = f"{SEQUENTIAL}-{CHECK}.{YEAR}.{SEGMENT}.{COURT}.{ORIGIN}"
 
 LINES = [
     "EDITAL DE LEILAO JUDICIAL",
     "",
-    f"Processo n. {PROCESSO}",
+    f"Processo n. {CASE_NUMBER}",
     "3a Vara Civel da Comarca do Rio de Janeiro - TJRJ",
     "Exequente: Condominio Edificio Exemplo",
     "",
@@ -111,5 +111,5 @@ def build_pdf() -> bytes:
 
 if __name__ == "__main__":
     OUT.write_bytes(build_pdf())
-    print(f"processo valido gerado: {PROCESSO}")
+    print(f"processo valido gerado: {CASE_NUMBER}")
     print(f"escrito: {OUT} ({OUT.stat().st_size} bytes)")
