@@ -480,9 +480,22 @@ if (!markdown.trim()) {
 
 // O bloco determinístico entra como conferência, não como verdade. O prompt
 // instrui o modelo a marcar confidence: low onde discordar do texto.
+//
+// Valores, datas e matrícula vão aqui porque sao exatamente o tipo de dado em
+// que parafrase e inaceitavel: na primeira ficha gerada por modelo, 10 das 35
+// citacoes nao existiam literalmente no edital.
 const hint = JSON.stringify({
   court_case: deterministic.court_case,
   cited_numbers: deterministic.cited_numbers,
+  money: (deterministic.money || []).map((m) => m.raw),
+  auction_rounds: deterministic.auction_rounds,
+  property_registry: (deterministic.property_registry || []).map((m) => m.value),
+  percentages: (deterministic.percentages || []).map((p) => p.raw),
+  areas: (deterministic.areas || []).map((a) => a.raw),
+  cnpj: deterministic.cnpj,
+  // CPF nunca vai para o prompt; so a contagem, para o modelo saber que o
+  // documento tem dado pessoal e nao tentar reproduzi-lo.
+  cpf_count: deterministic.cpf_count,
 }, null, 2);
 
 // Sem decodificação restrita o modelo precisa VER o schema: descrever os

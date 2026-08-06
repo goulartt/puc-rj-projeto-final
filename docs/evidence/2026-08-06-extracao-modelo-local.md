@@ -130,3 +130,53 @@ O `deepseek-v4-flash` dá conta do Estágio 1 a um custo que muda a economia do
 projeto: ~US$ 0,007 por edital contra ~US$ 0,25 estimados com Opus 5. Os US$ 5
 do orçamento cobrem centenas de editais. O gasto acumulado destas medições foi
 de US$ 0,0205.
+
+---
+
+# Efeito dos extratores determinísticos — 06/08/2026
+
+Terceira medição sobre o mesmo edital, agora com valores, datas de praça,
+matrícula, percentuais e áreas extraídos por expressão regular e entregues ao
+modelo como conferência.
+
+| | Sem extratores | Com extratores |
+|---|---|---|
+| Citações localizadas | 25 de 35 (71%) | 30 de 36 (83%) |
+| Processo, matrícula, avaliação | corretos | corretos |
+| Custo | US$ 0,0068 | US$ 0,0109 |
+
+O ganho está onde se esperava: o modelo passou a copiar em vez de parafrasear
+os campos em que havia âncora factual no prompt. As seis citações restantes são
+texto corrido — cláusulas de responsabilidade e condições de pagamento —, onde
+não há número a ancorar. Alvo de ajuste de prompt na Fase 7.
+
+## Duas armadilhas encontradas no edital real
+
+**Matrícula do imóvel × do leiloeiro.** O documento traz "matriculado na Junta
+Comercial ... sob o nº 798" (o leiloeiro) e "matrícula nº 106.233 do 4º
+Cartório de Registro de Imóveis" (o imóvel). O extrator exige que o texto
+**depois** do número mencione registro de imóveis.
+
+Olhar o texto **anterior** parecia prudente e estava errado: como o edital cita
+o leiloeiro antes do imóvel, a frase anterior contaminava a matrícula correta,
+que passava a ser descartada. O teste que pega isso põe as duas no mesmo texto.
+
+**Datas de praça absorvendo o resto do edital.** Associar cada data ao último
+rótulo de praça anterior fazia a segunda praça engolir a data de uma resolução
+do CNJ de 2016 e dois vencimentos de IPTU, milhares de caracteres adiante. Um
+limite de proximidade resolve.
+
+## Um vazamento de dado pessoal, e onde ele estava
+
+Os extratores mascaram o CPF no valor, mas o **contexto** de cada ocorrência —
+que também vai para o prompt e para o banco — carregava o número inteiro. O CPF
+de um executado escapava pelo contexto de um valor monetário vizinho.
+
+A máscara passou para `_context()`, ponto único por onde todo contexto sai, e o
+Markdown é higienizado já na conversão, que é onde o documento entra no
+sistema. Verificado contra o edital real: dois CPFs presentes no PDF, nenhum na
+saída dos extratores nem na ficha persistida.
+
+O teste que pegou isso afirma o que importa e não o mecanismo — "o CPF completo
+não aparece em lugar nenhum da saída" —, e por isso continuaria válido se a
+implementação mudasse.

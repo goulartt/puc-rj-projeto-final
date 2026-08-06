@@ -36,7 +36,7 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 sys.path.insert(0, "/app/lib")
-from extractors import cnj, movements  # noqa: E402
+from extractors import cnj, fields, movements  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("docling-service")
@@ -181,6 +181,7 @@ def extract(payload: dict = Body(...)) -> JSONResponse:
 
     return JSONResponse(
         {
+            **fields.extract_all(markdown),
             "court_case": main.to_dict() if main else None,
             # Precedentes citados no juridiquês do edital. Registrados para
             # auditoria e explicitamente fora da consulta ao DataJud: são
@@ -282,6 +283,11 @@ async def convert(
         "convertido file=%s bytes=%d ocr=%s paginas=%s chars=%d em %.1fs",
         file.filename, len(data), ocr, pages, len(markdown), elapsed,
     )
+
+    # CPF mascarado ja na conversao: e o ponto por onde o Markdown entra no
+    # sistema, e mascarar aqui garante que nenhum caminho adiante — banco,
+    # prompt, resposta — veja o numero inteiro.
+    markdown = fields.redact_cpf(markdown)
 
     return JSONResponse(
         {
