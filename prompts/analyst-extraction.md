@@ -20,6 +20,10 @@ preâmbulo, sem comentários, sem blocos de código ao redor.
 citação literal e curta do documento — não paráfrase, não resumo. Se você não
 consegue apontar o trecho, você não tem o campo.
 
+**Limite de 600 caracteres por `quote`**, que o schema impõe: ficha que passar
+disso é rejeitada inteira. Para juntar dois pontos distantes do documento,
+use `[...]` entre eles em vez de copiar tudo o que há no meio.
+
 Isso existe porque a pessoa vai agir sobre esta ficha. Ela precisa poder
 conferir cada afirmação contra o documento original.
 

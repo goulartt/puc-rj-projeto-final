@@ -121,6 +121,11 @@ services:
       # schema | json | none — quanto de estrutura o provedor consegue impor.
       LLM_EXTRACTION_STRUCTURED: ${LLM_EXTRACTION_STRUCTURED:-schema}
       LLM_EXTRACTION_MAX_TOKENS: ${LLM_EXTRACTION_MAX_TOKENS:-16000}
+      # Quanto o modelo pensa. Vazio = padrao do provedor. Ver a medicao em
+      # docs/evidence/ antes de mexer: e a unica alavanca com efeito real sobre
+      # o tempo, e o efeito na qualidade da ficha esta medido la.
+      LLM_EXTRACTION_REASONING: ${LLM_EXTRACTION_REASONING:-}
+      LLM_QA_REASONING: ${LLM_QA_REASONING:-}
       LLM_QA_PROVIDER: ${LLM_QA_PROVIDER}
       LLM_QA_MODEL: ${LLM_QA_MODEL}
       LLM_QA_BASE_URL: ${LLM_QA_BASE_URL}

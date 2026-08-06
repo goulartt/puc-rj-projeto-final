@@ -375,3 +375,45 @@ test('reconhece os enderecos locais usados no compose', () => {
   assert.equal(gw.isLocal('https://api.anthropic.com'), false);
   assert.equal(gw.isLocal('https://openrouter.ai/api'), false);
 });
+
+// ─── Controle de raciocínio ────────────────────────────────────────────────
+//
+// A extração do edital de exemplo gastava 14.366 dos 18.684 tokens de saída
+// pensando — 77%. Desligar o raciocínio é a única alavanca com efeito real
+// sobre os 147 segundos, e cada provedor a expõe de um jeito.
+
+test('openai: reasoning vira reasoning_effort, sem traducao', () => {
+  const config = { provider: 'openai', model: 'deepseek-v4-flash',
+                   baseUrl: 'https://api.deepseek.com', apiKey: 'k' };
+  const { body } = gw.buildRequest(config, {
+    messages: [{ role: 'user', content: 'oi' }], reasoning: 'none',
+  });
+  assert.equal(body.reasoning_effort, 'none');
+});
+
+test('openai: sem reasoning o campo nao vai no corpo', () => {
+  const config = { provider: 'openai', model: 'qwen3:14b',
+                   baseUrl: 'http://localhost:11434', apiKey: 'ollama' };
+  const { body } = gw.buildRequest(config, { messages: [{ role: 'user', content: 'oi' }] });
+  assert.ok(!('reasoning_effort' in body));
+});
+
+test('anthropic: raciocinio e thinking adaptive, nunca budget_tokens', () => {
+  const config = { provider: 'anthropic', model: 'claude-sonnet-5',
+                   baseUrl: 'https://api.anthropic.com', apiKey: 'k' };
+  const { body } = gw.buildRequest(config, {
+    messages: [{ role: 'user', content: 'oi' }], reasoning: 'high',
+  });
+  assert.deepEqual(body.thinking, { type: 'adaptive' });
+  // Os modelos da geracao 5 respondem 400 se `budget_tokens` vier.
+  assert.ok(!('budget_tokens' in body.thinking));
+});
+
+test('anthropic: none omite o campo em vez de mandar disabled', () => {
+  const config = { provider: 'anthropic', model: 'claude-sonnet-5',
+                   baseUrl: 'https://api.anthropic.com', apiKey: 'k' };
+  const { body } = gw.buildRequest(config, {
+    messages: [{ role: 'user', content: 'oi' }], reasoning: 'none',
+  });
+  assert.ok(!('thinking' in body));
+});

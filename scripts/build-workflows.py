@@ -86,6 +86,9 @@ try {{
     maxTokens: input.maxTokens || 4096,
     cacheSystem: Boolean(input.cacheSystem),
     structuredMode: input.structuredMode || 'schema',
+    // Vazio significa "deixe o provedor decidir", que e o comportamento
+    // anterior a esta variavel existir.
+    reasoning: ($env[`LLM_${{role.toUpperCase()}}_REASONING`] || '').trim() || null,
   }});
 }} catch (error) {{
   return [{{ json: {{ allowed: false, blocked_reason: error.message, role, chatId, received }} }}];

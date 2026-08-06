@@ -34,6 +34,17 @@ const STRUCTURED_NONE = 'none';      // nada; o schema vai no prompt
 
 const STRUCTURED_MODES = [STRUCTURED_SCHEMA, STRUCTURED_JSON, STRUCTURED_NONE];
 
+// Quanto o modelo pensa antes de responder. `none` desliga.
+//
+// Medido na extração do edital de exemplo: 14.366 dos 18.684 tokens de saída
+// eram raciocínio — 77% do tempo gasto pensando, não escrevendo a ficha. Num
+// trabalho de leitura e transcrição, onde o bloco determinístico já entrega os
+// números conferidos, boa parte desse esforço é redundante.
+//
+// Não é um botão de "ficar mais rápido de graça": o efeito na qualidade é
+// medido em docs/evidence/, não presumido.
+const REASONING_NONE = 'none';
+
 // Chamar de "openai" um endpoint da DeepSeek confunde quem lê o `.env`, então
 // aceitamos apelidos que dizem a mesma coisa com nomes menos enganosos.
 const PROVIDER_ALIASES = {
@@ -140,7 +151,7 @@ function resolveConfig(role, env) {
  */
 function buildRequest(config, {
   system, messages, schema, maxTokens = 4096, cacheSystem = false,
-  structuredMode = STRUCTURED_SCHEMA,
+  structuredMode = STRUCTURED_SCHEMA, reasoning = null,
 }) {
   if (!Array.isArray(messages) || messages.length === 0) {
     throw new Error('messages vazio.');
@@ -162,6 +173,12 @@ function buildRequest(config, {
     // A Messages API aceita schema completo; não há razão para degradar aqui.
     if (schema && structuredMode !== STRUCTURED_NONE) {
       body.output_config = { format: { type: 'json_schema', schema } };
+    }
+    // Nos modelos Claude atuais o raciocínio é ligado por `thinking: adaptive`,
+    // e a ausência do campo é o desligado. `budget_tokens` foi removido: os
+    // modelos da geração 5 respondem 400 se ele vier.
+    if (reasoning && reasoning !== REASONING_NONE) {
+      body.thinking = { type: 'adaptive' };
     }
 
     return {
@@ -194,6 +211,13 @@ function buildRequest(config, {
     // "This response_format type is unavailable now".
     body.response_format = { type: 'json_object' };
   }
+  // Verificado contra a API da DeepSeek: `none` zera de fato o raciocínio
+  // (27,5s → 3,1s no mesmo prompt), e `minimal` é ignorado em silêncio — que é
+  // o comportamento padrão de uma API compatível com OpenAI diante de um valor
+  // que ela não conhece. Por isso o campo passa adiante o que foi pedido, sem
+  // traduzir: inventar um mapeamento esconderia esse silêncio.
+  if (reasoning) body.reasoning_effort = reasoning;
+
   // `cacheSystem` não tem equivalente aqui e é ignorado de propósito: o
   // caminho OpenAI-compat não expõe controle de cache.
 
@@ -342,6 +366,7 @@ module.exports = {
   parseJsonOutput,
   computeCost,
   canProceed,
+  REASONING_NONE,
   STRUCTURED_SCHEMA,
   STRUCTURED_JSON,
   STRUCTURED_NONE,
