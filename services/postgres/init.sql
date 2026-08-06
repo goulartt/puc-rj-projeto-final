@@ -78,12 +78,18 @@ CREATE VIEW llm_call_health AS
     SELECT provider, model, role,
            count(*)                                  AS calls,
            count(*) FILTER (WHERE error IS NOT NULL) AS failures,
+           -- Quantas foram cronometradas: linhas anteriores a `duration_ms`
+           -- ficam de fora das medias, e a contagem torna isso visivel.
+           count(*) FILTER (WHERE duration_ms IS NOT NULL) AS timed,
            round(SUM(cost_usd), 6)                   AS cost_usd,
            round(avg(duration_ms) / 1000.0, 1)       AS avg_seconds,
            round(max(duration_ms) / 1000.0, 1)       AS max_seconds,
            -- Tokens de saida por segundo: e o que explica a diferenca entre
            -- uma extracao de 2 e uma de 4 minutos no mesmo modelo.
-           round(SUM(output_tokens) /
+           -- Só as linhas cronometradas entram no cálculo. Somar os tokens de
+           -- todas e dividir pelo tempo de algumas produz número impossível:
+           -- a primeira versão desta view reportou 4260 tokens/s.
+           round(SUM(output_tokens) FILTER (WHERE duration_ms IS NOT NULL) /
                  NULLIF(SUM(duration_ms) / 1000.0, 0), 1) AS output_tokens_per_second
       FROM llm_calls
      GROUP BY provider, model, role;
