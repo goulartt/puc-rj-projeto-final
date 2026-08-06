@@ -36,7 +36,7 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 sys.path.insert(0, "/app/lib")
-from extractors import cnj, fields, movements  # noqa: E402
+from extractors import cnj, fields, movements, scope  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("docling-service")
@@ -190,6 +190,27 @@ def extract(payload: dict = Body(...)) -> JSONResponse:
             "candidates": [n.to_dict() for n in all_numbers],
         }
     )
+
+
+@app.post("/scope")
+def check_scope(payload: dict = Body(...)) -> JSONResponse:
+    """Diz quais perguntas o assistente não deve responder.
+
+    O limite do produto — não opinar se vale a pena arrematar, não estimar
+    valor de mercado, não orientar juridicamente — está escrito no prompt de
+    sistema e, ainda assim, o modelo local o ignorou na primeira vez que foi
+    testado. Aqui ele é regra em vez de pedido.
+
+    Aceita uma lista porque o fluxo do n8n classifica todas as mensagens do
+    lote numa chamada só.
+    """
+    texts = payload.get("texts")
+    if texts is None:
+        texts = [payload.get("text") or ""]
+    if not isinstance(texts, list):
+        raise HTTPException(status_code=400, detail="`texts` deve ser uma lista")
+
+    return JSONResponse({"results": scope.classify_all([str(t or "") for t in texts])})
 
 
 @app.post("/movements/analyze")

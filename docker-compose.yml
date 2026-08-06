@@ -79,7 +79,8 @@ services:
       # Preenchido por ./scripts/tunnel-url.sh. É o que o n8n usa para montar
       # a URL de webhook que registramos no Telegram — sem isso ele gera
       # http://localhost:5678, que o Telegram não consegue alcançar.
-      WEBHOOK_URL: ${WEBHOOK_URL}
+      # URL publica do tunel: e a base do webhook que o Telegram chama.
+      N8N_WEBHOOK_URL: ${WEBHOOK_URL}
 
       # Deixa os fluxos lerem process.env — é assim que o gateway troca de
       # provider sem editar workflow. Sem isso, a abstração não funciona.

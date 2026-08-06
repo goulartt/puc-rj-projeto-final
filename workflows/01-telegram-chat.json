@@ -1,0 +1,870 @@
+{
+  "id": "telegramchat0001",
+  "name": "01 - Chat no Telegram",
+  "nodes": [
+    {
+      "parameters": {
+        "updates": [
+          "message"
+        ],
+        "additionalFields": {
+          "download": true
+        }
+      },
+      "id": "mensagem-no-telegram",
+      "name": "Mensagem no Telegram",
+      "type": "n8n-nodes-base.telegramTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "leilao-telegram",
+          "name": "Bot do Telegram"
+        }
+      },
+      "webhookId": "5f1a0c2e-7b64-4d18-9a3f-telegramchat01"
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Classifica a mensagem em um de cinco caminhos. A classificacao e\n// deterministica de proposito: gastar uma chamada de LLM para descobrir que a\n// pessoa mandou `/ajuda` seria desperdicio, e comando tem de responder sempre.\nreturn $input.all().map((entry) => {\nconst message = entry.json.message || {};\nconst chatId = String((message.chat || {}).id || '');\nconst text = (message.text || message.caption || '').trim();\nconst document = message.document || null;\n\nconst isPdf = Boolean(document) && (\n  (document.mime_type || '').includes('pdf') ||\n  /\\.pdf$/i.test(document.file_name || '')\n);\n\nlet route = 'question';\nif (isPdf) route = 'document';\nelse if (document || (message.photo || []).length) route = 'unsupported_file';\nelse if (/^\\/(start|ajuda|help)\\b/i.test(text)) route = 'help';\nelse if (/^\\/apagar\\b/i.test(text)) route = 'forget';\nelse if (!text) route = 'unsupported_file';\n\n// O binario segue junto: e o PDF que a ingestao manda para o Docling. Um Code\n// node que devolve so `json` descarta o anexo silenciosamente.\nreturn {\n  json: {\n    route,\n    chat_id: chatId,\n    text,\n    file_name: isPdf ? (document.file_name || 'edital.pdf') : null,\n  },\n  binary: entry.binary,\n};\n});\n"
+      },
+      "id": "rotear-mensagem",
+      "name": "Rotear mensagem",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Manda ao servico so as mensagens que sao pergunta; comando e documento nao\n// passam por escopo.\nconst questions = $input.all()\n  .filter((i) => i.json.route === 'question')\n  .map((i) => i.json.text);\nreturn [{ json: { texts: questions } }];\n"
+      },
+      "id": "classificar-escopo",
+      "name": "Classificar escopo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        380,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DOCLING_URL }}/scope",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ texts: $json.texts }) }}",
+        "options": {
+          "timeout": 15000
+        }
+      },
+      "id": "consultar-escopo",
+      "name": "Consultar escopo",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        540,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Reescreve a rota das perguntas que pedem justamente o que o assistente nao\n// faz. A decisao e deterministica e vem antes do modelo: o limite prometido\n// pelo produto nao pode depender de o modelo obedecer ao prompt — e, testado,\n// ele nao obedeceu.\nconst verdicts = $input.first().json.results || [];\nlet index = 0;\n\nreturn $('Rotear mensagem').all().map((entry) => {\n  if (entry.json.route !== 'question') return entry;\n  const verdict = verdicts[index++] || { in_scope: true };\n  if (verdict.in_scope) return entry;\n  return {\n    json: { ...entry.json, route: 'out_of_scope', refusal: verdict.reply,\n            refusal_kind: verdict.kind },\n    binary: entry.binary,\n  };\n});\n"
+      },
+      "id": "aplicar-escopo",
+      "name": "Aplicar escopo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        700,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "document",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "document"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "document"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "question",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "question"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "question"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "help",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "help"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "help"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "forget",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "forget"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "forget"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "unsupported_file",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "unsupported_file"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "unsupported_file"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "out_of_scope",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "out_of_scope"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "out_of_scope"
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "none"
+        }
+      },
+      "id": "caminho",
+      "name": "Caminho",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        860,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "editalingest0001",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "chamar-ingestao",
+      "name": "Chamar ingestao",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        660,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst result = $input.first().json;\n// Uma mensagem do Telegram carrega no maximo um documento, entao ha exatamente\n// um item nesta rota.\nconst routed = $('Aplicar escopo').all()\n  .filter((i) => i.json.route === 'document')[0].json;\nconst NL = String.fromCharCode(10);\n\nif (!result.ok) {\n  const problems = (result.problems || []).join('; ');\n  return [{ json: { chat_id: routed.chat_id, text:\n    'Nao consegui analisar este edital.' + NL + NL + (problems || 'causa desconhecida') + NL + NL +\n    'Se o PDF for digitalizado, a leitura pode falhar. Tente outro arquivo.' } }];\n}\n\nconst a = result.analysis || {};\nconst brl = (n) => (n == null ? null\n  : n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }));\nconst line = (label, value) => (value ? '*' + label + ':* ' + value : null);\n\nconst occupancy = {\n  occupied: 'ocupado', vacant: 'desocupado', not_informed: 'NAO INFORMADO no edital',\n}[((a.occupancy || {}).status || {}).value || (a.occupancy || {}).status] || null;\n\nconst risks = (a.risks || []).filter((r) => r.severity === 'high').slice(0, 3);\nconst gaps = (a.gaps || []).slice(0, 3);\nconst appraisal = a.appraisal || {};\n\nconst out = [\n  '*Ficha do edital* — ' + (routed.file_name || 'documento'),\n  '',\n  line('Imovel', ((a.property || {}).type || {}).value),\n  line('Matricula', ((a.property || {}).registry_number || {}).value),\n  line('Avaliacao', brl((appraisal.updated_value || {}).amount_brl\n       || (appraisal.value || {}).amount_brl)),\n  line('Ocupacao', occupancy),\n  line('Processo', (a.court_case || {}).number),\n  '',\n].filter((l) => l !== null);\n\nif (risks.length) {\n  out.push('*Riscos de maior peso*');\n  risks.forEach((r) => out.push('• ' + r.description));\n  out.push('');\n}\nif (gaps.length) {\n  out.push('*O que o edital NAO informa*');\n  gaps.forEach((g) => out.push('• ' + g.field + ' — ' + g.why_it_matters));\n  out.push('');\n}\nout.push('Pergunte o que quiser sobre este edital. Nao sou advogado e nao digo se',\n         'vale a pena arrematar.');\n\nlet text = out.join(NL);\nif (text.length > 3900) text = text.slice(0, 3900) + NL + NL + '_(resposta truncada)_';\nreturn [{ json: { chat_id: routed.chat_id, text } }];\n"
+      },
+      "id": "resposta-da-ficha",
+      "name": "Resposta da ficha",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, file_name, analysis FROM auction_notices WHERE chat_id = $1 ORDER BY created_at DESC LIMIT 1;",
+        "options": {
+          "queryReplacement": "={{ [$json.chat_id] }}"
+        }
+      },
+      "id": "carregar-ficha-do-chat",
+      "name": "Carregar ficha do chat",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        660,
+        -120
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "leilao-postgres",
+          "name": "Postgres do projeto"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Contexto do Estagio 3: a ficha, nao o edital inteiro. E isso que mantem a\n// pergunta barata — ~3 mil tokens em vez de ~12 mil.\n// A consulta devolve no maximo uma ficha (LIMIT 1), e ela vale para todas as\n// perguntas deste chat.\nconst rows = $input.all().map((i) => i.json).filter((r) => r && r.analysis);\nconst notice = rows.length ? rows[0] : null;\n\n// Item por pergunta: cada uma vira uma chamada propria ao modelo.\n//\n// A selecao e pela rota, e nao pelo indice da saida do Switch: `.all()` num no\n// de multiplas saidas devolve a primeira delas, que aqui e o ramo de documento.\n// Filtrar pelo campo diz o que se quer e independe da ordem das saidas.\nconst asked = $('Aplicar escopo').all().filter((i) => i.json.route === 'question');\n\nreturn asked.map((entry) => ({ json: {\n  chat_id: entry.json.chat_id,\n  question: entry.json.text,\n  has_notice: Boolean(notice),\n  file_name: notice ? notice.file_name : null,\n  analysis: notice ? notice.analysis : null,\n} }));\n"
+      },
+      "id": "montar-contexto",
+      "name": "Montar contexto",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.DOCLING_URL }}/prompt/qa-system",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "buscar-prompt-de-q&a",
+      "name": "Buscar prompt de Q&A",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1080,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.DOCLING_URL }}/prompt/glossary",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "buscar-glossario",
+      "name": "Buscar glossario",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1280,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst systemPrompt = $('Buscar prompt de Q&A').first().json.text;\nconst glossary = $('Buscar glossario').first().json.text;\n\n// O bloco de sistema e identico entre perguntas do mesmo chat, entao e montado\n// uma vez so e reaproveitado — e o que torna o cache util.\nconst contexts = $('Montar contexto').all().map((i) => i.json);\nconst parts = [systemPrompt, '', '# GLOSSARIO', glossary];\nif (contexts.length && contexts[0].has_notice) {\n  parts.push('', '# FICHA DO EDITAL CARREGADO',\n             JSON.stringify(contexts[0].analysis, null, 2));\n} else {\n  parts.push('', '# SEM EDITAL CARREGADO',\n    'A pessoa ainda nao enviou nenhum edital. Responda duvidas conceituais pelo',\n    'glossario. Se a pergunta depender de um edital especifico, peca o PDF.');\n}\n\nconst system = parts.join(String.fromCharCode(10));\nreturn contexts.map((context) => ({ json: {\n  role: 'qa',\n  system,\n  cacheSystem: true,\n  maxTokens: Number($env.LLM_QA_MAX_TOKENS || 8192),\n  messages: [{ role: 'user', content: context.question }],\n} }));\n"
+      },
+      "id": "preparar-pergunta",
+      "name": "Preparar pergunta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1480,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "llmgateway0000001",
+          "mode": "id"
+        },
+        "mode": "each",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "perguntar-ao-modelo",
+      "name": "Perguntar ao modelo",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1680,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Pareado com `Montar contexto`, que esta no mesmo ramo e tem os mesmos itens\n// na mesma ordem. Referenciar o roteador seria errado: `.first()` la traria o\n// primeiro item de todos os ramos, nao o desta pergunta.\nconst contexts = $('Montar contexto').all().map((i) => i.json);\n\nreturn $input.all().map((item, index) => {\n  const gateway = item.json;\n  let text;\n  if (gateway.blocked) {\n    text = 'Nao consegui responder agora: ' + (gateway.reason || 'limite de uso atingido') +\n           '. Tente de novo mais tarde.';\n  } else if (!gateway.text) {\n    text = 'Nao consegui formular uma resposta para isso. Pode reformular a pergunta?';\n  } else {\n    text = gateway.text;\n  }\n\n  // O Telegram corta em 4096 caracteres; truncar com aviso e melhor que a\n  // mensagem sumir sem explicacao.\n  const NL = String.fromCharCode(10);\n  if (text.length > 3900) text = text.slice(0, 3900) + NL + NL + '_(resposta truncada)_';\n\n  return { json: { chat_id: (contexts[index] || contexts[0]).chat_id, text } };\n});\n"
+      },
+      "id": "resposta-da-pergunta",
+      "name": "Resposta da pergunta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1880,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst chatId = $('Aplicar escopo').all()\n  .filter((i) => i.json.route === 'help')[0].json.chat_id;\n\n// O bloco de transparencia nao e cortesia: a pessoa precisa saber que fala com\n// um sistema automatizado, o que acontece com o PDF que ela enviar, e como\n// apagar. Esta em docs/privacy.md e aparece no primeiro contato.\nconst text = [\n  '*Arremata AI* — assistente para editais de leilao de imovel.',\n  '',\n  'Sou um sistema automatizado, *nao sou advogado* e nao substituo analise',\n  'juridica. Explico termos, prazos e riscos do edital, e mostro de onde',\n  'tirei cada resposta.',\n  '',\n  '*Como usar*',\n  'Envie o PDF do edital e eu monto uma ficha com prazos, valores, onus,',\n  'debitos e o que o documento _nao_ informa. Depois pergunte o que quiser',\n  'sobre ele, em portugues normal. Sem edital carregado, respondo duvidas',\n  'gerais de leilao.',\n  '',\n  '*O que faco com seus dados*',\n  'Guardo o texto do edital e a ficha para responder suas perguntas. A',\n  'extracao usa um modelo de terceiro. CPF que apareca no documento e',\n  'mascarado antes de qualquer coisa ser gravada.',\n  'Use /apagar para remover tudo desta conversa.',\n  '',\n  '*O que nao faco*',\n  'Nao digo se vale a pena arrematar, nao estimo valor de mercado e nao dou',\n  'orientacao juridica.',\n].join(String.fromCharCode(10));\n\nreturn [{ json: { chat_id: chatId, text } }];\n"
+      },
+      "id": "texto-de-ajuda",
+      "name": "Texto de ajuda",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        100
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "DELETE FROM auction_notices WHERE chat_id = $1;",
+        "options": {
+          "queryReplacement": "={{ [$json.chat_id] }}"
+        }
+      },
+      "id": "apagar-dados-do-chat",
+      "name": "Apagar dados do chat",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        660,
+        260
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "leilao-postgres",
+          "name": "Postgres do projeto"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst routed = $('Aplicar escopo').all()\n  .filter((i) => i.json.route === 'forget')[0].json;\nconst NL = String.fromCharCode(10);\nreturn [{ json: { chat_id: routed.chat_id, text:\n  'Pronto. Apaguei os editais e as fichas desta conversa.' + NL + NL +\n  'Envie um novo PDF quando quiser comecar de novo.' } }];\n"
+      },
+      "id": "confirmar-exclusao",
+      "name": "Confirmar exclusao",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst routed = $('Aplicar escopo').all()\n  .filter((i) => i.json.route === 'unsupported_file')[0].json;\nconst NL = String.fromCharCode(10);\nreturn [{ json: { chat_id: routed.chat_id, text:\n  'So consigo ler edital em PDF. Envie o arquivo como documento, nao como foto.' + NL + NL +\n  'Use /ajuda para ver o que eu faco.' } }];\n"
+      },
+      "id": "arquivo-nao-suportado",
+      "name": "Arquivo nao suportado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1060,
+        420
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nreturn $input.all().map((entry) => ({\n  json: { chat_id: entry.json.chat_id, text: entry.json.refusal },\n}));\n"
+      },
+      "id": "recusa-fora-de-escopo",
+      "name": "Recusa fora de escopo",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1060,
+        560
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "parse_mode": "Markdown",
+          "appendAttribution": false
+        }
+      },
+      "id": "responder-ficha",
+      "name": "Responder ficha",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1100,
+        -320
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "leilao-telegram",
+          "name": "Bot do Telegram"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "parse_mode": "Markdown",
+          "appendAttribution": false
+        }
+      },
+      "id": "responder-pergunta",
+      "name": "Responder pergunta",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        2080,
+        -120
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "leilao-telegram",
+          "name": "Bot do Telegram"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "parse_mode": "Markdown",
+          "appendAttribution": false
+        }
+      },
+      "id": "responder-ajuda",
+      "name": "Responder ajuda",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        880,
+        100
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "leilao-telegram",
+          "name": "Bot do Telegram"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "parse_mode": "Markdown",
+          "appendAttribution": false
+        }
+      },
+      "id": "responder-exclusao",
+      "name": "Responder exclusao",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1100,
+        260
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "leilao-telegram",
+          "name": "Bot do Telegram"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "parse_mode": "Markdown",
+          "appendAttribution": false
+        }
+      },
+      "id": "responder-nao-suportado",
+      "name": "Responder nao suportado",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1280,
+        420
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "leilao-telegram",
+          "name": "Bot do Telegram"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "parse_mode": "Markdown",
+          "appendAttribution": false
+        }
+      },
+      "id": "responder-recusa",
+      "name": "Responder recusa",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        1280,
+        560
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "leilao-telegram",
+          "name": "Bot do Telegram"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Mensagem no Telegram": {
+      "main": [
+        [
+          {
+            "node": "Rotear mensagem",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rotear mensagem": {
+      "main": [
+        [
+          {
+            "node": "Classificar escopo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classificar escopo": {
+      "main": [
+        [
+          {
+            "node": "Consultar escopo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar escopo": {
+      "main": [
+        [
+          {
+            "node": "Aplicar escopo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aplicar escopo": {
+      "main": [
+        [
+          {
+            "node": "Caminho",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Caminho": {
+      "main": [
+        [
+          {
+            "node": "Chamar ingestao",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Carregar ficha do chat",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Texto de ajuda",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Apagar dados do chat",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Arquivo nao suportado",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Recusa fora de escopo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chamar ingestao": {
+      "main": [
+        [
+          {
+            "node": "Resposta da ficha",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resposta da ficha": {
+      "main": [
+        [
+          {
+            "node": "Responder ficha",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Carregar ficha do chat": {
+      "main": [
+        [
+          {
+            "node": "Montar contexto",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Montar contexto": {
+      "main": [
+        [
+          {
+            "node": "Buscar prompt de Q&A",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar prompt de Q&A": {
+      "main": [
+        [
+          {
+            "node": "Buscar glossario",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar glossario": {
+      "main": [
+        [
+          {
+            "node": "Preparar pergunta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar pergunta": {
+      "main": [
+        [
+          {
+            "node": "Perguntar ao modelo",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Perguntar ao modelo": {
+      "main": [
+        [
+          {
+            "node": "Resposta da pergunta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resposta da pergunta": {
+      "main": [
+        [
+          {
+            "node": "Responder pergunta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Texto de ajuda": {
+      "main": [
+        [
+          {
+            "node": "Responder ajuda",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Apagar dados do chat": {
+      "main": [
+        [
+          {
+            "node": "Confirmar exclusao",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Confirmar exclusao": {
+      "main": [
+        [
+          {
+            "node": "Responder exclusao",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Arquivo nao suportado": {
+      "main": [
+        [
+          {
+            "node": "Responder nao suportado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Recusa fora de escopo": {
+      "main": [
+        [
+          {
+            "node": "Responder recusa",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

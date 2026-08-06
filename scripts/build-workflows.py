@@ -937,6 +937,465 @@ return [
     }
 
 
+# ─── 01 — Chat no Telegram (Estágio 3) ──────────────────────────────────────
+
+CHAT_ID_WF = "telegramchat0001"
+CHAT_OUTPUT = ROOT / "workflows" / "01-telegram-chat.json"
+
+TELEGRAM_CRED = {"telegramApi": {"id": "leilao-telegram", "name": "Bot do Telegram"}}
+POSTGRES_CRED = {"postgres": {"id": "leilao-postgres", "name": "Postgres do projeto"}}
+
+CHAT_ROUTE = """
+// Classifica a mensagem em um de cinco caminhos. A classificacao e
+// deterministica de proposito: gastar uma chamada de LLM para descobrir que a
+// pessoa mandou `/ajuda` seria desperdicio, e comando tem de responder sempre.
+return $input.all().map((entry) => {
+const message = entry.json.message || {};
+const chatId = String((message.chat || {}).id || '');
+const text = (message.text || message.caption || '').trim();
+const document = message.document || null;
+
+const isPdf = Boolean(document) && (
+  (document.mime_type || '').includes('pdf') ||
+  /\\.pdf$/i.test(document.file_name || '')
+);
+
+let route = 'question';
+if (isPdf) route = 'document';
+else if (document || (message.photo || []).length) route = 'unsupported_file';
+else if (/^\\/(start|ajuda|help)\\b/i.test(text)) route = 'help';
+else if (/^\\/apagar\\b/i.test(text)) route = 'forget';
+else if (!text) route = 'unsupported_file';
+
+// O binario segue junto: e o PDF que a ingestao manda para o Docling. Um Code
+// node que devolve so `json` descarta o anexo silenciosamente.
+return {
+  json: {
+    route,
+    chat_id: chatId,
+    text,
+    file_name: isPdf ? (document.file_name || 'edital.pdf') : null,
+  },
+  binary: entry.binary,
+};
+});
+"""
+
+CHAT_SCOPE_REQUEST = """
+// Manda ao servico so as mensagens que sao pergunta; comando e documento nao
+// passam por escopo.
+const questions = $input.all()
+  .filter((i) => i.json.route === 'question')
+  .map((i) => i.json.text);
+return [{ json: { texts: questions } }];
+"""
+
+CHAT_SCOPE_APPLY = """
+// Reescreve a rota das perguntas que pedem justamente o que o assistente nao
+// faz. A decisao e deterministica e vem antes do modelo: o limite prometido
+// pelo produto nao pode depender de o modelo obedecer ao prompt — e, testado,
+// ele nao obedeceu.
+const verdicts = $input.first().json.results || [];
+let index = 0;
+
+return $('Rotear mensagem').all().map((entry) => {
+  if (entry.json.route !== 'question') return entry;
+  const verdict = verdicts[index++] || { in_scope: true };
+  if (verdict.in_scope) return entry;
+  return {
+    json: { ...entry.json, route: 'out_of_scope', refusal: verdict.reply,
+            refusal_kind: verdict.kind },
+    binary: entry.binary,
+  };
+});
+"""
+
+CHAT_REFUSAL = """
+return $input.all().map((entry) => ({
+  json: { chat_id: entry.json.chat_id, text: entry.json.refusal },
+}));
+"""
+
+CHAT_HELP = """
+const chatId = $('Aplicar escopo').all()
+  .filter((i) => i.json.route === 'help')[0].json.chat_id;
+
+// O bloco de transparencia nao e cortesia: a pessoa precisa saber que fala com
+// um sistema automatizado, o que acontece com o PDF que ela enviar, e como
+// apagar. Esta em docs/privacy.md e aparece no primeiro contato.
+const text = [
+  '*Arremata AI* — assistente para editais de leilao de imovel.',
+  '',
+  'Sou um sistema automatizado, *nao sou advogado* e nao substituo analise',
+  'juridica. Explico termos, prazos e riscos do edital, e mostro de onde',
+  'tirei cada resposta.',
+  '',
+  '*Como usar*',
+  'Envie o PDF do edital e eu monto uma ficha com prazos, valores, onus,',
+  'debitos e o que o documento _nao_ informa. Depois pergunte o que quiser',
+  'sobre ele, em portugues normal. Sem edital carregado, respondo duvidas',
+  'gerais de leilao.',
+  '',
+  '*O que faco com seus dados*',
+  'Guardo o texto do edital e a ficha para responder suas perguntas. A',
+  'extracao usa um modelo de terceiro. CPF que apareca no documento e',
+  'mascarado antes de qualquer coisa ser gravada.',
+  'Use /apagar para remover tudo desta conversa.',
+  '',
+  '*O que nao faco*',
+  'Nao digo se vale a pena arrematar, nao estimo valor de mercado e nao dou',
+  'orientacao juridica.',
+].join(String.fromCharCode(10));
+
+return [{ json: { chat_id: chatId, text } }];
+"""
+
+CHAT_CONTEXT = """
+// Contexto do Estagio 3: a ficha, nao o edital inteiro. E isso que mantem a
+// pergunta barata — ~3 mil tokens em vez de ~12 mil.
+// A consulta devolve no maximo uma ficha (LIMIT 1), e ela vale para todas as
+// perguntas deste chat.
+const rows = $input.all().map((i) => i.json).filter((r) => r && r.analysis);
+const notice = rows.length ? rows[0] : null;
+
+// Item por pergunta: cada uma vira uma chamada propria ao modelo.
+//
+// A selecao e pela rota, e nao pelo indice da saida do Switch: `.all()` num no
+// de multiplas saidas devolve a primeira delas, que aqui e o ramo de documento.
+// Filtrar pelo campo diz o que se quer e independe da ordem das saidas.
+const asked = $('Aplicar escopo').all().filter((i) => i.json.route === 'question');
+
+return asked.map((entry) => ({ json: {
+  chat_id: entry.json.chat_id,
+  question: entry.json.text,
+  has_notice: Boolean(notice),
+  file_name: notice ? notice.file_name : null,
+  analysis: notice ? notice.analysis : null,
+} }));
+"""
+
+CHAT_PREPARE = """
+const systemPrompt = $('Buscar prompt de Q&A').first().json.text;
+const glossary = $('Buscar glossario').first().json.text;
+
+// O bloco de sistema e identico entre perguntas do mesmo chat, entao e montado
+// uma vez so e reaproveitado — e o que torna o cache util.
+const contexts = $('Montar contexto').all().map((i) => i.json);
+const parts = [systemPrompt, '', '# GLOSSARIO', glossary];
+if (contexts.length && contexts[0].has_notice) {
+  parts.push('', '# FICHA DO EDITAL CARREGADO',
+             JSON.stringify(contexts[0].analysis, null, 2));
+} else {
+  parts.push('', '# SEM EDITAL CARREGADO',
+    'A pessoa ainda nao enviou nenhum edital. Responda duvidas conceituais pelo',
+    'glossario. Se a pergunta depender de um edital especifico, peca o PDF.');
+}
+
+const system = parts.join(String.fromCharCode(10));
+return contexts.map((context) => ({ json: {
+  role: 'qa',
+  system,
+  cacheSystem: true,
+  maxTokens: Number($env.LLM_QA_MAX_TOKENS || 8192),
+  messages: [{ role: 'user', content: context.question }],
+} }));
+"""
+
+CHAT_ANSWER = """
+// Pareado com `Montar contexto`, que esta no mesmo ramo e tem os mesmos itens
+// na mesma ordem. Referenciar o roteador seria errado: `.first()` la traria o
+// primeiro item de todos os ramos, nao o desta pergunta.
+const contexts = $('Montar contexto').all().map((i) => i.json);
+
+return $input.all().map((item, index) => {
+  const gateway = item.json;
+  let text;
+  if (gateway.blocked) {
+    text = 'Nao consegui responder agora: ' + (gateway.reason || 'limite de uso atingido') +
+           '. Tente de novo mais tarde.';
+  } else if (!gateway.text) {
+    text = 'Nao consegui formular uma resposta para isso. Pode reformular a pergunta?';
+  } else {
+    text = gateway.text;
+  }
+
+  // O Telegram corta em 4096 caracteres; truncar com aviso e melhor que a
+  // mensagem sumir sem explicacao.
+  const NL = String.fromCharCode(10);
+  if (text.length > 3900) text = text.slice(0, 3900) + NL + NL + '_(resposta truncada)_';
+
+  return { json: { chat_id: (contexts[index] || contexts[0]).chat_id, text } };
+});
+"""
+
+CHAT_INGEST_REPLY = """
+const result = $input.first().json;
+// Uma mensagem do Telegram carrega no maximo um documento, entao ha exatamente
+// um item nesta rota.
+const routed = $('Aplicar escopo').all()
+  .filter((i) => i.json.route === 'document')[0].json;
+const NL = String.fromCharCode(10);
+
+if (!result.ok) {
+  const problems = (result.problems || []).join('; ');
+  return [{ json: { chat_id: routed.chat_id, text:
+    'Nao consegui analisar este edital.' + NL + NL + (problems || 'causa desconhecida') + NL + NL +
+    'Se o PDF for digitalizado, a leitura pode falhar. Tente outro arquivo.' } }];
+}
+
+const a = result.analysis || {};
+const brl = (n) => (n == null ? null
+  : n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }));
+const line = (label, value) => (value ? '*' + label + ':* ' + value : null);
+
+const occupancy = {
+  occupied: 'ocupado', vacant: 'desocupado', not_informed: 'NAO INFORMADO no edital',
+}[((a.occupancy || {}).status || {}).value || (a.occupancy || {}).status] || null;
+
+const risks = (a.risks || []).filter((r) => r.severity === 'high').slice(0, 3);
+const gaps = (a.gaps || []).slice(0, 3);
+const appraisal = a.appraisal || {};
+
+const out = [
+  '*Ficha do edital* — ' + (routed.file_name || 'documento'),
+  '',
+  line('Imovel', ((a.property || {}).type || {}).value),
+  line('Matricula', ((a.property || {}).registry_number || {}).value),
+  line('Avaliacao', brl((appraisal.updated_value || {}).amount_brl
+       || (appraisal.value || {}).amount_brl)),
+  line('Ocupacao', occupancy),
+  line('Processo', (a.court_case || {}).number),
+  '',
+].filter((l) => l !== null);
+
+if (risks.length) {
+  out.push('*Riscos de maior peso*');
+  risks.forEach((r) => out.push('• ' + r.description));
+  out.push('');
+}
+if (gaps.length) {
+  out.push('*O que o edital NAO informa*');
+  gaps.forEach((g) => out.push('• ' + g.field + ' — ' + g.why_it_matters));
+  out.push('');
+}
+out.push('Pergunte o que quiser sobre este edital. Nao sou advogado e nao digo se',
+         'vale a pena arrematar.');
+
+let text = out.join(NL);
+if (text.length > 3900) text = text.slice(0, 3900) + NL + NL + '_(resposta truncada)_';
+return [{ json: { chat_id: routed.chat_id, text } }];
+"""
+
+CHAT_FORGET_REPLY = """
+const routed = $('Aplicar escopo').all()
+  .filter((i) => i.json.route === 'forget')[0].json;
+const NL = String.fromCharCode(10);
+return [{ json: { chat_id: routed.chat_id, text:
+  'Pronto. Apaguei os editais e as fichas desta conversa.' + NL + NL +
+  'Envie um novo PDF quando quiser comecar de novo.' } }];
+"""
+
+CHAT_UNSUPPORTED = """
+const routed = $('Aplicar escopo').all()
+  .filter((i) => i.json.route === 'unsupported_file')[0].json;
+const NL = String.fromCharCode(10);
+return [{ json: { chat_id: routed.chat_id, text:
+  'So consigo ler edital em PDF. Envie o arquivo como documento, nao como foto.' + NL + NL +
+  'Use /ajuda para ver o que eu faco.' } }];
+"""
+
+
+def _telegram_send(name: str, position: list[int]) -> dict:
+    return node(name, "n8n-nodes-base.telegram", 1.2, position, {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {"parse_mode": "Markdown", "appendAttribution": False},
+    }, credentials=TELEGRAM_CRED)
+
+
+def build_chat() -> dict:
+    """Estágio 3: a conversa. Responde pela ficha, não pelo edital inteiro."""
+    nodes = [
+        # `webhookId` fixo e obrigatorio: e ele que compoe a URL registrada no
+        # Telegram. Sem o campo, o fluxo importado tenta registrar uma URL com
+        # `undefined` no caminho e o Telegram responde "Bad request".
+        # Fixo, e nao gerado, para o JSON continuar reprodutivel em diff.
+        {**node("Mensagem no Telegram", "n8n-nodes-base.telegramTrigger", 1.2, [0, 0], {
+            "updates": ["message"],
+            "additionalFields": {"download": True},
+        }, credentials=TELEGRAM_CRED),
+         "webhookId": "5f1a0c2e-7b64-4d18-9a3f-telegramchat01"},
+        node("Rotear mensagem", "n8n-nodes-base.code", 2, [200, 0], {"jsCode": CHAT_ROUTE}),
+        node("Classificar escopo", "n8n-nodes-base.code", 2, [380, 0],
+             {"jsCode": CHAT_SCOPE_REQUEST}),
+        node("Consultar escopo", "n8n-nodes-base.httpRequest", 4.2, [540, 0], {
+            "method": "POST", "url": "={{ $env.DOCLING_URL }}/scope",
+            "sendBody": True, "specifyBody": "json",
+            "jsonBody": "={{ JSON.stringify({ texts: $json.texts }) }}",
+            "options": {"timeout": 15000}}),
+        node("Aplicar escopo", "n8n-nodes-base.code", 2, [700, 0],
+             {"jsCode": CHAT_SCOPE_APPLY}),
+        node("Caminho", "n8n-nodes-base.switch", 3.2, [860, 0], {
+            "rules": {"values": [
+                {"conditions": {
+                    "options": {"caseSensitive": True, "typeValidation": "strict", "version": 2},
+                    "conditions": [{"id": route,
+                                    "operator": {"type": "string", "operation": "equals"},
+                                    "leftValue": "={{ $json.route }}", "rightValue": route}],
+                    "combinator": "and"},
+                 "outputKey": route}
+                for route in ("document", "question", "help", "forget",
+                              "unsupported_file", "out_of_scope")
+            ]},
+            "options": {"fallbackOutput": "none"},
+        }),
+
+        # ── documento ──
+        node("Chamar ingestao", "n8n-nodes-base.executeWorkflow", 1.3, [660, -320], {
+            "workflowId": {"__rl": True, "value": INGEST_ID, "mode": "id"},
+            "options": {"waitForSubWorkflow": True},
+        }),
+        node("Resposta da ficha", "n8n-nodes-base.code", 2, [880, -320],
+             {"jsCode": CHAT_INGEST_REPLY}),
+
+        # ── pergunta ──
+        node("Carregar ficha do chat", "n8n-nodes-base.postgres", 2.7, [660, -120], {
+            "operation": "executeQuery",
+            "query": ("SELECT id, file_name, analysis FROM auction_notices "
+                      "WHERE chat_id = $1 ORDER BY created_at DESC LIMIT 1;"),
+            "options": {"queryReplacement": "={{ [$json.chat_id] }}"},
+        }, credentials=POSTGRES_CRED, alwaysOutputData=True),
+        node("Montar contexto", "n8n-nodes-base.code", 2, [880, -120],
+             {"jsCode": CHAT_CONTEXT}),
+        node("Buscar prompt de Q&A", "n8n-nodes-base.httpRequest", 4.2, [1080, -120], {
+            "url": "={{ $env.DOCLING_URL }}/prompt/qa-system", "options": {"timeout": 30000}}),
+        node("Buscar glossario", "n8n-nodes-base.httpRequest", 4.2, [1280, -120], {
+            "url": "={{ $env.DOCLING_URL }}/prompt/glossary", "options": {"timeout": 30000}}),
+        node("Preparar pergunta", "n8n-nodes-base.code", 2, [1480, -120],
+             {"jsCode": CHAT_PREPARE}),
+        node("Perguntar ao modelo", "n8n-nodes-base.executeWorkflow", 1.3, [1680, -120], {
+            "workflowId": {"__rl": True, "value": GATEWAY_ID, "mode": "id"},
+            # Uma execucao por pergunta: `once` mandaria so a primeira ao modelo.
+            "mode": "each",
+            "options": {"waitForSubWorkflow": True},
+        }),
+        node("Resposta da pergunta", "n8n-nodes-base.code", 2, [1880, -120],
+             {"jsCode": CHAT_ANSWER}),
+
+        # ── ajuda, apagar, arquivo nao suportado ──
+        node("Texto de ajuda", "n8n-nodes-base.code", 2, [660, 100], {"jsCode": CHAT_HELP}),
+        node("Apagar dados do chat", "n8n-nodes-base.postgres", 2.7, [660, 260], {
+            "operation": "executeQuery",
+            "query": "DELETE FROM auction_notices WHERE chat_id = $1;",
+            "options": {"queryReplacement": "={{ [$json.chat_id] }}"},
+        }, credentials=POSTGRES_CRED, alwaysOutputData=True),
+        node("Confirmar exclusao", "n8n-nodes-base.code", 2, [880, 260],
+             {"jsCode": CHAT_FORGET_REPLY}),
+        node("Arquivo nao suportado", "n8n-nodes-base.code", 2, [1060, 420],
+             {"jsCode": CHAT_UNSUPPORTED}),
+        node("Recusa fora de escopo", "n8n-nodes-base.code", 2, [1060, 560],
+             {"jsCode": CHAT_REFUSAL}),
+
+        _telegram_send("Responder ficha", [1100, -320]),
+        _telegram_send("Responder pergunta", [2080, -120]),
+        _telegram_send("Responder ajuda", [880, 100]),
+        _telegram_send("Responder exclusao", [1100, 260]),
+        _telegram_send("Responder nao suportado", [1280, 420]),
+        _telegram_send("Responder recusa", [1280, 560]),
+    ]
+
+    def chain(*names: str) -> dict:
+        return {a: {"main": [[{"node": b, "type": "main", "index": 0}]]}
+                for a, b in zip(names, names[1:])}
+
+    connections = {
+        **chain("Mensagem no Telegram", "Rotear mensagem", "Classificar escopo",
+                "Consultar escopo", "Aplicar escopo", "Caminho"),
+        "Caminho": {"main": [
+            [{"node": "Chamar ingestao", "type": "main", "index": 0}],
+            [{"node": "Carregar ficha do chat", "type": "main", "index": 0}],
+            [{"node": "Texto de ajuda", "type": "main", "index": 0}],
+            [{"node": "Apagar dados do chat", "type": "main", "index": 0}],
+            [{"node": "Arquivo nao suportado", "type": "main", "index": 0}],
+            [{"node": "Recusa fora de escopo", "type": "main", "index": 0}],
+        ]},
+        **chain("Chamar ingestao", "Resposta da ficha", "Responder ficha"),
+        **chain("Carregar ficha do chat", "Montar contexto", "Buscar prompt de Q&A",
+                "Buscar glossario",
+                "Preparar pergunta", "Perguntar ao modelo", "Resposta da pergunta",
+                "Responder pergunta"),
+        **chain("Texto de ajuda", "Responder ajuda"),
+        **chain("Apagar dados do chat", "Confirmar exclusao", "Responder exclusao"),
+        **chain("Arquivo nao suportado", "Responder nao suportado"),
+        **chain("Recusa fora de escopo", "Responder recusa"),
+    }
+
+    return {
+        "id": CHAT_ID_WF,
+        "name": "01 - Chat no Telegram",
+        "nodes": nodes,
+        "connections": connections,
+        "settings": {"executionOrder": "v1"},
+    }
+
+
+CHAT_SMOKE_ID = "chatsmoke00000001"
+CHAT_SMOKE_OUTPUT = ROOT / "tests" / "workflows" / "96-chat-smoke.json"
+
+CHAT_SMOKE_MESSAGES = """
+// Mensagens sinteticas no formato que o Telegram entrega, uma por caminho do
+// roteador. O chat_id e o mesmo que a ingestao usou no smoke test, entao o
+// caminho de pergunta encontra a ficha real do edital de exemplo.
+const chat = { id: 'smoke-test' };
+return [
+  { json: { message: { chat, text: 'Esse imovel esta ocupado?' } } },
+  { json: { message: { chat, text: 'Vale a pena comprar esse imovel?' } } },
+  { json: { message: { chat, text: 'O que e comissao do leiloeiro?' } } },
+  { json: { message: { chat, text: 'Posso processar o antigo dono?' } } },
+  { json: { message: { chat, text: '/ajuda' } } },
+  { json: { message: { chat, photo: [{ file_id: 'x' }] } } },
+];
+"""
+
+
+def build_chat_smoke() -> dict:
+    """Exercita o chat sem o Telegram na frente nem atras.
+
+    Deriva do fluxo real em vez de reimplementa-lo: o gatilho vira disparo
+    manual com mensagens sinteticas e os envios viram passagem direta. Tudo no
+    meio — roteamento, carga da ficha, montagem do prompt, gateway — e
+    exatamente o codigo que roda em producao, e nao uma copia que envelhece.
+    """
+    chat = build_chat()
+    nodes = []
+    for original in chat["nodes"]:
+        if original["type"] == "n8n-nodes-base.telegramTrigger":
+            nodes.append(node("Disparo manual", "n8n-nodes-base.manualTrigger", 1,
+                              [-400, 0], {}))
+            nodes.append(node("Mensagem no Telegram", "n8n-nodes-base.code", 2,
+                              [-200, 0], {"jsCode": CHAT_SMOKE_MESSAGES}))
+            continue
+        if original["type"] == "n8n-nodes-base.telegram":
+            # Sem credencial e sem rede: so devolve o que teria sido enviado.
+            nodes.append(node(original["name"], "n8n-nodes-base.code", 2,
+                              original["position"],
+                              {"jsCode": "return $input.all();"}))
+            continue
+        nodes.append(original)
+
+    connections = dict(chat["connections"])
+    connections["Disparo manual"] = {
+        "main": [[{"node": "Mensagem no Telegram", "type": "main", "index": 0}]]}
+
+    return {
+        "id": CHAT_SMOKE_ID,
+        "name": "96 - Smoke do chat",
+        "nodes": nodes,
+        "connections": connections,
+        "settings": {"executionOrder": "v1"},
+    }
+
+
 if __name__ == "__main__":
     write(OUTPUT, build())
     write(SMOKE_OUTPUT, build_smoke())
@@ -944,3 +1403,5 @@ if __name__ == "__main__":
     write(INGEST_SMOKE_OUTPUT, build_ingest_smoke())
     write(LOOKUP_OUTPUT, build_lookup())
     write(LOOKUP_SMOKE_OUTPUT, build_lookup_smoke())
+    write(CHAT_OUTPUT, build_chat())
+    write(CHAT_SMOKE_OUTPUT, build_chat_smoke())
