@@ -19,25 +19,59 @@
 
 'use strict';
 
+// Os dois valores nomeiam **protocolos HTTP**, não empresas: `anthropic` é o
+// formato da Messages API, `openai` é o formato `chat/completions`, que
+// DeepSeek, Ollama, OpenRouter, Together, Groq e vLLM também falam.
 const ANTHROPIC = 'anthropic';
 const OPENAI = 'openai';
 
-/**
- * Preço por milhão de tokens, em USD. Conferido em 05/08/2026.
- *
- * Só entram modelos cujo preço foi verificado. Modelo ausente da tabela não
- * vira custo zero: vira `costKnown: false`, para o teto de orçamento não ser
- * furado em silêncio por um modelo que ninguém precificou.
- */
-const PRICING = {
-  'claude-opus-5': { input: 5, output: 25 },
-  'claude-opus-4-8': { input: 5, output: 25 },
-  'claude-sonnet-5': { input: 3, output: 15 },
-  'claude-haiku-4-5': { input: 1, output: 5 },
+// Quanto de estrutura o provedor consegue impor por conta própria. Em todos os
+// casos quem garante o contrato é a validação posterior; isto só decide o que
+// pedimos ao provedor, e o que precisa ir no texto do prompt.
+const STRUCTURED_SCHEMA = 'schema';  // schema completo, decodificação restrita
+const STRUCTURED_JSON = 'json';      // só "responda JSON", sem estrutura
+const STRUCTURED_NONE = 'none';      // nada; o schema vai no prompt
+
+const STRUCTURED_MODES = [STRUCTURED_SCHEMA, STRUCTURED_JSON, STRUCTURED_NONE];
+
+// Chamar de "openai" um endpoint da DeepSeek confunde quem lê o `.env`, então
+// aceitamos apelidos que dizem a mesma coisa com nomes menos enganosos.
+const PROVIDER_ALIASES = {
+  anthropic: ANTHROPIC,
+  claude: ANTHROPIC,
+  openai: OPENAI,
+  'openai-compatible': OPENAI,
+  deepseek: OPENAI,
+  ollama: OPENAI,
+  openrouter: OPENAI,
+  groq: OPENAI,
+  together: OPENAI,
+  vllm: OPENAI,
 };
 
-/** Leitura em cache custa ~10% da entrada; ver docs de prompt caching. */
-const CACHE_READ_MULTIPLIER = 0.1;
+/**
+ * Preço por milhão de tokens, em USD. Conferido em 06/08/2026.
+ *
+ * `cachedInput` é o preço de token lido do cache, e é **por modelo**: a
+ * Anthropic cobra ~10% da entrada, a DeepSeek cobra 2%. Uma constante única
+ * faria a contabilidade errar em um dos dois, e o teto de orçamento depende
+ * desse número estar certo.
+ *
+ * Só entram modelos cujo preço foi verificado. Modelo ausente da tabela não
+ * vira custo zero: `canProceed` o barra, para o teto não ser furado em
+ * silêncio por um modelo que ninguém precificou.
+ */
+const PRICING = {
+  'claude-opus-5': { input: 5, output: 25, cachedInput: 0.5 },
+  'claude-opus-4-8': { input: 5, output: 25, cachedInput: 0.5 },
+  'claude-sonnet-5': { input: 3, output: 15, cachedInput: 0.3 },
+  'claude-haiku-4-5': { input: 1, output: 5, cachedInput: 0.1 },
+
+  // DeepSeek — a documentação avisa que os preços vão subir "significativamente
+  // em breve". Reconferir antes de confiar no custo projetado.
+  'deepseek-v4-flash': { input: 0.14, output: 0.28, cachedInput: 0.0028 },
+  'deepseek-v4-pro': { input: 0.435, output: 0.87, cachedInput: 0.003625 },
+};
 
 /** Endereços que caracterizam modelo local — custo real zero. */
 const LOCAL_HOSTS = ['localhost', '127.0.0.1', '::1', 'host.docker.internal', 'ollama'];
@@ -71,11 +105,13 @@ function isLocal(baseUrl) {
  */
 function resolveConfig(role, env) {
   const prefix = `LLM_${role.toUpperCase()}_`;
-  const provider = (env[`${prefix}PROVIDER`] || '').trim().toLowerCase();
+  const declared = (env[`${prefix}PROVIDER`] || '').trim().toLowerCase();
+  const provider = PROVIDER_ALIASES[declared] || declared;
 
   if (provider !== ANTHROPIC && provider !== OPENAI) {
     throw new Error(
-      `${prefix}PROVIDER invalido: ${JSON.stringify(provider)}. Use "${ANTHROPIC}" ou "${OPENAI}".`,
+      `${prefix}PROVIDER invalido: ${JSON.stringify(declared)}. ` +
+        `Valores aceitos: ${Object.keys(PROVIDER_ALIASES).sort().join(', ')}.`,
     );
   }
 
@@ -90,11 +126,22 @@ function resolveConfig(role, env) {
 /**
  * Monta a requisição HTTP do provedor.
  *
- * `system` é string única; `messages` é [{role, content}]. `schema` opcional
- * pede saída estruturada. `cacheSystem` marca o bloco de sistema para cache —
- * é o que torna barato repetir o mesmo edital em perguntas seguintes.
+ * `system` é string única; `messages` é [{role, content}].
+ *
+ * `schema` pede **decodificação restrita** ao provedor. É otimização, não
+ * garantia: quem garante o formato é a validação que roda depois, no serviço
+ * de documentos. Nem todo provedor dá conta — o Ollama compila o schema numa
+ * gramática GBNF e falha com "failed to parse grammar" em schemas do tamanho
+ * do nosso, para qualquer geração acima de ~200 tokens. Por isso o campo é
+ * opcional e o pipeline continua correto sem ele.
+ *
+ * `cacheSystem` marca o bloco de sistema para cache — é o que torna barato
+ * repetir o mesmo prompt de analista entre editais.
  */
-function buildRequest(config, { system, messages, schema, maxTokens = 4096, cacheSystem = false }) {
+function buildRequest(config, {
+  system, messages, schema, maxTokens = 4096, cacheSystem = false,
+  structuredMode = STRUCTURED_SCHEMA,
+}) {
   if (!Array.isArray(messages) || messages.length === 0) {
     throw new Error('messages vazio.');
   }
@@ -112,7 +159,8 @@ function buildRequest(config, { system, messages, schema, maxTokens = 4096, cach
       if (cacheSystem) block.cache_control = { type: 'ephemeral' };
       body.system = [block];
     }
-    if (schema) {
+    // A Messages API aceita schema completo; não há razão para degradar aqui.
+    if (schema && structuredMode !== STRUCTURED_NONE) {
       body.output_config = { format: { type: 'json_schema', schema } };
     }
 
@@ -135,11 +183,16 @@ function buildRequest(config, { system, messages, schema, maxTokens = 4096, cach
     messages: system ? [{ role: 'system', content: system }, ...messages] : messages,
   };
 
-  if (schema) {
+  if (structuredMode === STRUCTURED_SCHEMA && schema) {
     body.response_format = {
       type: 'json_schema',
       json_schema: { name: 'output', strict: true, schema },
     };
+  } else if (structuredMode === STRUCTURED_JSON) {
+    // Só garante JSON sintático, não a estrutura. É o máximo que a DeepSeek
+    // oferece hoje: `json_schema` responde
+    // "This response_format type is unavailable now".
+    body.response_format = { type: 'json_object' };
   }
   // `cacheSystem` não tem equivalente aqui e é ignorado de propósito: o
   // caminho OpenAI-compat não expõe controle de cache.
@@ -234,10 +287,11 @@ function computeCost(config, usage) {
     return { usd: 0, known: false, reason: `preco desconhecido para ${config.model}` };
   }
 
+  // `input` já inclui os tokens lidos do cache; só a diferença paga preço cheio.
   const uncachedInput = Math.max(0, (usage.input || 0) - (usage.cached || 0));
   const usd =
     (uncachedInput * price.input +
-      (usage.cached || 0) * price.input * CACHE_READ_MULTIPLIER +
+      (usage.cached || 0) * price.cachedInput +
       (usage.output || 0) * price.output) /
     1e6;
 
@@ -288,5 +342,9 @@ module.exports = {
   parseJsonOutput,
   computeCost,
   canProceed,
+  STRUCTURED_SCHEMA,
+  STRUCTURED_JSON,
+  STRUCTURED_NONE,
+  STRUCTURED_MODES,
   isLocal,
 };

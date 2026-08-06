@@ -44,6 +44,19 @@ test('resolve a configuracao a partir do prefixo do papel', () => {
   assert.equal(cfg.baseUrl, 'https://api.anthropic.com');
 });
 
+test('apelidos de fornecedor resolvem para o protocolo certo', () => {
+  // O valor nomeia o protocolo HTTP, nao a empresa. Apontar a DeepSeek com
+  // PROVIDER=openai confunde quem le o .env, entao o nome do fornecedor vale.
+  for (const alias of ['deepseek', 'ollama', 'openrouter', 'groq', 'openai-compatible']) {
+    const cfg = gw.resolveConfig('extraction', { ...ENV_ANTHROPIC, LLM_EXTRACTION_PROVIDER: alias });
+    assert.equal(cfg.provider, 'openai', alias);
+  }
+  for (const alias of ['anthropic', 'claude']) {
+    const cfg = gw.resolveConfig('extraction', { ...ENV_ANTHROPIC, LLM_EXTRACTION_PROVIDER: alias });
+    assert.equal(cfg.provider, 'anthropic', alias);
+  }
+});
+
 test('barra provider desconhecido em vez de tentar adivinhar', () => {
   assert.throws(
     () => gw.resolveConfig('extraction', { ...ENV_ANTHROPIC, LLM_EXTRACTION_PROVIDER: 'gemini' }),
@@ -141,6 +154,37 @@ test('messages vazio e erro, nao requisicao malformada', () => {
   );
 });
 
+test('modo json pede JSON sintatico, nao schema — e o que a DeepSeek aceita', () => {
+  const cfg = gw.resolveConfig('extraction', {
+    LLM_EXTRACTION_PROVIDER: 'deepseek',
+    LLM_EXTRACTION_MODEL: 'deepseek-v4-flash',
+    LLM_EXTRACTION_BASE_URL: 'https://api.deepseek.com',
+    LLM_EXTRACTION_API_KEY: 'x',
+  });
+  const req = gw.buildRequest(cfg, { ...PAYLOAD, schema: SCHEMA, structuredMode: gw.STRUCTURED_JSON });
+  assert.deepEqual(req.body.response_format, { type: 'json_object' });
+});
+
+test('modo none nao envia response_format algum', () => {
+  const req = gw.buildRequest(gw.resolveConfig('qa', ENV_OLLAMA), {
+    ...PAYLOAD, schema: SCHEMA, structuredMode: gw.STRUCTURED_NONE,
+  });
+  assert.equal(req.body.response_format, undefined);
+});
+
+test('modo schema continua sendo o padrao', () => {
+  const req = gw.buildRequest(gw.resolveConfig('qa', ENV_OLLAMA), { ...PAYLOAD, schema: SCHEMA });
+  assert.equal(req.body.response_format.type, 'json_schema');
+});
+
+test('anthropic mantem o schema completo mesmo no modo json', () => {
+  // Degradar aqui seria perda gratuita: a Messages API aceita schema.
+  const req = gw.buildRequest(gw.resolveConfig('extraction', ENV_ANTHROPIC), {
+    ...PAYLOAD, schema: SCHEMA, structuredMode: gw.STRUCTURED_JSON,
+  });
+  assert.deepEqual(req.body.output_config, { format: { type: 'json_schema', schema: SCHEMA } });
+});
+
 // ─── Diferença 3: formato do usage ──────────────────────────────────────────
 
 // Resposta real do Ollama, capturada em 05/08/2026.
@@ -220,12 +264,52 @@ test('calcula custo do anthropic pela tabela', () => {
   assert.equal(cost.usd, 30);
 });
 
-test('token lido do cache custa 10% da entrada', () => {
-  const cfg = gw.resolveConfig('extraction', ENV_ANTHROPIC);
-  const semCache = gw.computeCost(cfg, { input: 1e6, output: 0, cached: 0 });
-  const comCache = gw.computeCost(cfg, { input: 1e6, output: 0, cached: 1e6 });
-  assert.equal(semCache.usd, 5);
-  assert.equal(comCache.usd, 0.5);
+test('token lido do cache usa o preco de cache do proprio modelo', () => {
+  const anthropic = gw.resolveConfig('extraction', ENV_ANTHROPIC);
+  assert.equal(gw.computeCost(anthropic, { input: 1e6, output: 0, cached: 0 }).usd, 5);
+  assert.equal(gw.computeCost(anthropic, { input: 1e6, output: 0, cached: 1e6 }).usd, 0.5);
+});
+
+test('preco de cache e por modelo, nao um multiplicador unico', () => {
+  // A Anthropic cobra 10% da entrada pelo cache; a DeepSeek cobra 2%. Uma
+  // constante compartilhada erraria um dos dois, e o teto de orcamento depende
+  // desse numero.
+  const deepseek = gw.resolveConfig('extraction', {
+    LLM_EXTRACTION_PROVIDER: 'openai',
+    LLM_EXTRACTION_MODEL: 'deepseek-v4-flash',
+    LLM_EXTRACTION_BASE_URL: 'https://api.deepseek.com',
+    LLM_EXTRACTION_API_KEY: 'x',
+  });
+  assert.equal(gw.computeCost(deepseek, { input: 1e6, output: 0, cached: 0 }).usd, 0.14);
+  assert.equal(gw.computeCost(deepseek, { input: 1e6, output: 0, cached: 1e6 }).usd, 0.0028);
+
+  const ratioAnthropic = 0.5 / 5;
+  const ratioDeepseek = 0.0028 / 0.14;
+  assert.notEqual(ratioAnthropic, ratioDeepseek);
+});
+
+test('deepseek e remoto e faturavel, entao respeita o teto', () => {
+  const cfg = gw.resolveConfig('extraction', {
+    LLM_EXTRACTION_PROVIDER: 'openai',
+    LLM_EXTRACTION_MODEL: 'deepseek-v4-flash',
+    LLM_EXTRACTION_BASE_URL: 'https://api.deepseek.com',
+    LLM_EXTRACTION_API_KEY: 'x',
+  });
+  assert.equal(gw.canProceed(cfg, { spentUsd: 0, limitUsd: 5 }).billable, true);
+  assert.equal(gw.canProceed(cfg, { spentUsd: 5, limitUsd: 5 }).allowed, false);
+});
+
+test('custo real de uma extracao de edital cabe no orcamento', () => {
+  // ~12k tokens de entrada e ~4k de saida: e a ordem de grandeza medida no
+  // edital de exemplo. Serve para o custo por edital nao mudar sem alguem ver.
+  const cfg = gw.resolveConfig('extraction', {
+    LLM_EXTRACTION_PROVIDER: 'openai',
+    LLM_EXTRACTION_MODEL: 'deepseek-v4-flash',
+    LLM_EXTRACTION_BASE_URL: 'https://api.deepseek.com',
+    LLM_EXTRACTION_API_KEY: 'x',
+  });
+  const cost = gw.computeCost(cfg, { input: 12000, output: 4000, cached: 0 });
+  assert.ok(cost.usd < 0.01, `esperado abaixo de 1 centavo, veio ${cost.usd}`);
 });
 
 test('modelo remoto fora da tabela nao vira custo zero', () => {

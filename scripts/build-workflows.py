@@ -81,6 +81,7 @@ try {{
     schema: input.schema,
     maxTokens: input.maxTokens || 4096,
     cacheSystem: Boolean(input.cacheSystem),
+    structuredMode: input.structuredMode || 'schema',
   }});
 }} catch (error) {{
   return [{{ json: {{ allowed: false, blocked_reason: error.message, role, received }} }}];
@@ -96,7 +97,7 @@ return [{{ json: {{
   url: request.url,
   headers: request.headers,
   body: request.body,
-  wants_json: Boolean(input.schema),
+  wants_json: input.expectJson !== undefined ? Boolean(input.expectJson) : Boolean(input.schema),
 }} }}];
 """
 
@@ -119,6 +120,8 @@ if (raw.error || raw.__httpError) {{
     error: JSON.stringify(raw.error || raw.__httpError).slice(0, 500),
     usage: {{ input: 0, output: 0, cached: 0 }},
     cost_usd: 0,
+    cost_known: true,
+    billable: prepared.billable,
   }} }}];
 }}
 
@@ -147,6 +150,7 @@ return [{{ json: {{
   cost_usd: cost.usd,
   cost_known: cost.known,
   billable: prepared.billable,
+  error: null,
 }} }}];
 """
 
@@ -169,6 +173,37 @@ return [{ json: {
   limit_usd: blocked.limit_usd ?? null,
 } }];
 """
+
+
+def check_code_nodes(workflow: dict, label: str) -> None:
+    """Roda `node --check` em cada nó de código gerado.
+
+    Os nós de código são montados por concatenação de string, e um escape mal
+    resolvido produz JavaScript inválido que só falha em tempo de execução,
+    dentro do container. Isso já aconteceu duas vezes; a verificação custa
+    milissegundos e transforma o erro em falha de build.
+    """
+    import subprocess
+    import tempfile
+
+    for item in workflow["nodes"]:
+        if item["type"] != "n8n-nodes-base.code":
+            continue
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as tmp:
+            tmp.write(item["parameters"]["jsCode"])
+            path = tmp.name
+        result = subprocess.run(["node", "--check", path], capture_output=True, text=True)
+        pathlib.Path(path).unlink(missing_ok=True)
+        if result.returncode:
+            detail = result.stderr.strip().splitlines()[-1] if result.stderr else "erro desconhecido"
+            raise SystemExit(f"JS invalido em {label} :: {item['name']}\n  {detail}")
+
+
+def write(path: pathlib.Path, workflow: dict) -> None:
+    check_code_nodes(workflow, path.name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(workflow, indent=2, ensure_ascii=False) + "\n")
+    print(f"escrito: {path.relative_to(ROOT)}")
 
 
 def node(name, node_type, type_version, position, parameters, **extra):
@@ -268,14 +303,13 @@ def build() -> dict:
                 "operation": "executeQuery",
                 "query": (
                     "INSERT INTO llm_calls "
-                    "(role, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd) "
-                    "VALUES ($1, $2, $3, $4, $5, $6, $7);"
+                    "(role, provider, model, input_tokens, output_tokens, cached_tokens, cost_usd, error) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7, $8);"
                 ),
                 "options": {
                     "queryReplacement": (
-                        "={{ $json.role }},={{ $json.provider }},={{ $json.model }},"
-                        "={{ $json.usage.input }},={{ $json.usage.output }},"
-                        "={{ $json.usage.cached }},={{ $json.cost_usd }}"
+                        "={{ [$json.role, $json.provider, $json.model, $json.usage.input,"
+                    " $json.usage.output, $json.usage.cached, $json.cost_usd, $json.error] }}"
                     )
                 },
             },
@@ -377,11 +411,298 @@ def build_smoke() -> dict:
     }
 
 
-if __name__ == "__main__":
-    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    OUTPUT.write_text(json.dumps(build(), indent=2, ensure_ascii=False) + "\n")
-    print(f"escrito: {OUTPUT.relative_to(ROOT)}")
+INGEST_SMOKE_OUTPUT = ROOT / "tests" / "workflows" / "98-ingest-smoke.json"
 
-    SMOKE_OUTPUT.parent.mkdir(parents=True, exist_ok=True)
-    SMOKE_OUTPUT.write_text(json.dumps(build_smoke(), indent=2, ensure_ascii=False) + "\n")
-    print(f"escrito: {SMOKE_OUTPUT.relative_to(ROOT)}")
+
+def build_ingest_smoke() -> dict:
+    """Roda a ingestão com o edital versionado, sem depender do Telegram."""
+    nodes = [
+        node("Disparo manual", "n8n-nodes-base.manualTrigger", 1, [0, 0], {}),
+        node("Ler edital do disco", "n8n-nodes-base.readWriteFile", 1.1, [200, 0], {
+            "fileSelector": "/data/editais/edital-exemplo.pdf",
+            "options": {"dataPropertyName": "data"},
+        }),
+        node("Identificar o chat", "n8n-nodes-base.code", 2, [400, 0], {"jsCode": """
+// chat_id fixo de teste: a ingestao guarda a ficha por chat, e o smoke test
+// precisa de um identificador estavel para poder reexecutar sem duplicar.
+return [{ json: { chat_id: 'smoke-test', file_name: 'edital-exemplo.pdf' },
+          binary: $input.first().binary }];
+"""}),
+        node("Chamar ingestao", "n8n-nodes-base.executeWorkflow", 1.3, [600, 0], {
+            "workflowId": {"__rl": True, "value": INGEST_ID, "mode": "id"},
+            "options": {"waitForSubWorkflow": True},
+        }),
+    ]
+    connections = {
+        "Disparo manual": {"main": [[{"node": "Ler edital do disco", "type": "main", "index": 0}]]},
+        "Ler edital do disco": {"main": [[{"node": "Identificar o chat", "type": "main", "index": 0}]]},
+        "Identificar o chat": {"main": [[{"node": "Chamar ingestao", "type": "main", "index": 0}]]},
+    }
+    return {
+        "id": "ingestsmoke00001",
+        "name": "98 - Smoke test da ingestao",
+        "nodes": nodes,
+        "connections": connections,
+        "settings": {"executionOrder": "v1"},
+    }
+
+
+# ─── 02 — Ingestão do edital (Estágio 1) ────────────────────────────────────
+
+INGEST_ID = "editalingest0001"
+INGEST_OUTPUT = ROOT / "workflows" / "02-edital-ingest.json"
+
+INGEST_PREPARE_PROMPT = """
+// Monta a chamada de extração. O prompt e o schema vêm de arquivos montados no
+// container, e não embutidos aqui: assim continuam revisáveis em diff e o
+// mesmo texto que o repositório versiona é o que o modelo recebe.
+const trigger = $('Chamada de outro fluxo').first().json;
+const converted = $('Converter PDF').first().json;
+const markdown = converted.markdown || '';
+const deterministic = $('Extrair campos deterministicos').first().json;
+const systemPrompt = $('Buscar prompt de analista').first().json.text;
+const schema = $('Buscar schema da ficha').first().json.schema;
+
+// Decodificação restrita é otimização, não garantia: quem valida a ficha é o
+// serviço de documentos, logo adiante. O Ollama nao consegue compilar um
+// schema deste tamanho em gramatica GBNF, entao ela fica desligavel por
+// variavel de ambiente sem que o pipeline perca correcao.
+// schema | json | none — o que o provedor consegue impor. A DeepSeek recusa
+// json_schema ("This response_format type is unavailable now") e aceita json;
+// o Ollama nao compila um schema deste tamanho em gramatica. Em qualquer modo
+// quem garante o contrato e a validacao posterior.
+const structuredMode = String($env.LLM_EXTRACTION_STRUCTURED || 'schema');
+const providerEnforcesSchema = structuredMode === 'schema';
+
+if (!markdown.trim()) {
+  throw new Error('Docling devolveu markdown vazio — edital ilegivel ou conversao falhou.');
+}
+
+// O bloco determinístico entra como conferência, não como verdade. O prompt
+// instrui o modelo a marcar confidence: low onde discordar do texto.
+const hint = JSON.stringify({
+  court_case: deterministic.court_case,
+  cited_numbers: deterministic.cited_numbers,
+}, null, 2);
+
+// Sem decodificação restrita o modelo precisa VER o schema: descrever os
+// campos em prosa não basta, e a primeira versão deste fluxo os omitia por
+// completo — o modelo inventava a estrutura e a validação reprovava tudo.
+// Montado com join em vez de escapes: este bloco vive dentro de uma string
+// Python, onde uma barra-n sozinha viraria quebra de linha de verdade e
+// partiria o literal JavaScript ao meio.
+const schemaInstruction = providerEnforcesSchema ? '' : [
+  '',
+  '',
+  'ESQUEMA OBRIGATORIO DA RESPOSTA (JSON Schema). Responda com um unico objeto',
+  'JSON que satisfaca este esquema, sem texto ao redor. Nao invente campos:',
+  '`additionalProperties` e false em todos os niveis.',
+  '',
+  // Sem esta linha o modelo aninhou `auctioneer_fee` e `payment` dentro de
+  // `debts`. Enumerar as chaves de topo custa poucos tokens e evita o erro.
+  'As chaves de PRIMEIRO NIVEL sao exatamente estas, nenhuma aninhada em outra: '
+    + Object.keys(schema.properties).join(', ') + '.',
+  JSON.stringify(schema),
+].join(String.fromCharCode(10));
+
+return [{ json: {
+  role: 'extraction',
+  system: systemPrompt + schemaInstruction,
+  schema,
+  structuredMode,
+  // Cache no bloco de sistema: o prompt de analista é idêntico entre editais.
+  cacheSystem: true,
+  // Modelo de raciocinio gasta boa parte do orcamento de saida pensando: o
+  // deepseek-v4-flash consumiu 24 mil tokens de reasoning neste edital e so
+  // depois escreveu a ficha. Com 16 mil ele terminava em finish_reason=length
+  // e conteudo vazio.
+  maxTokens: Number($env.LLM_EXTRACTION_MAX_TOKENS || 16000),
+  expectJson: true,
+  messages: [{ role: 'user', content:
+    'EXTRACAO DETERMINISTICA (confira contra o texto):\\n' + hint +
+    '\\n\\nEDITAL:\\n' + markdown }],
+  // Carregado adiante, na persistência.
+  _chat_id: trigger.chat_id,
+  _file_name: trigger.file_name,
+  _markdown: markdown,
+  _sha256: converted.sha256,
+  _deterministic: deterministic,
+} }];
+"""
+
+INGEST_CHECK = """
+// Decide se a ficha pode ser persistida. Ficha que não valida não entra no
+// banco: uma ficha parcial envenena silenciosamente toda pergunta seguinte.
+const prepared = $('Preparar extracao').first().json;
+const gateway = $('Extrair ficha').first().json;
+const check = $('Validar ficha').first().json;
+
+const problems = [];
+if (gateway.blocked) problems.push('gateway bloqueou: ' + gateway.reason);
+if (gateway.refusal) problems.push('modelo recusou a requisicao');
+if (gateway.error) problems.push('erro do provedor: ' + String(gateway.error).slice(0, 200));
+if (gateway.parse_failed) problems.push('resposta do modelo nao era JSON');
+if (check && check.valid === false) {
+  problems.push('ficha invalida (' + check.error_count + ' erro(s)): ' +
+    (check.errors || []).slice(0, 3).map((e) => e.path + ': ' + e.message).join(' | '));
+}
+
+return [{ json: {
+  ok: problems.length === 0,
+  problems,
+  chat_id: prepared._chat_id,
+  file_name: prepared._file_name,
+  // Hash calculado pelo serviço sobre os bytes do PDF. O sandbox do nó de
+  // código nao expõe `crypto`, e o hash do arquivo é a chave certa de qualquer
+  // forma — o do Markdown mudaria numa atualização do conversor.
+  sha256: prepared._sha256,
+  markdown: prepared._markdown,
+  deterministic: prepared._deterministic,
+  analysis: gateway.parsed || null,
+  usage: gateway.usage || null,
+  cost_usd: gateway.cost_usd ?? null,
+} }];
+"""
+
+
+def build_ingest() -> dict:
+    """Estágio 1: PDF do edital vira ficha estruturada e persistida.
+
+    Sub-workflow de propósito: o gatilho do Telegram entra na Fase 6, e manter
+    a ingestão separada permite testá-la com um arquivo local, sem depender de
+    bot configurado.
+    """
+    nodes = [
+        node("Chamada de outro fluxo", "n8n-nodes-base.executeWorkflowTrigger", 1.2,
+             [0, 0], {"inputSource": "passthrough"}),
+        node("Converter PDF", "n8n-nodes-base.httpRequest", 4.5, [200, 0], {
+            "method": "POST",
+            "url": "={{ $env.DOCLING_URL }}/convert",
+            "sendBody": True,
+            "contentType": "multipart-form-data",
+            "bodyParameters": {"parameters": [
+                {"parameterType": "formBinaryData", "name": "file", "inputDataFieldName": "data"},
+            ]},
+            "options": {"timeout": 900000},
+        }),
+        node("Extrair campos deterministicos", "n8n-nodes-base.httpRequest", 4.5, [400, 0], {
+            "method": "POST",
+            "url": "={{ $env.DOCLING_URL }}/extract",
+            "sendBody": True,
+            "specifyBody": "json",
+            "jsonBody": "={{ JSON.stringify({ markdown: $json.markdown }) }}",
+            "options": {"timeout": 60000},
+        }),
+        # Prompt e schema vêm por HTTP do serviço de documentos, e não de nós
+        # de leitura de arquivo: aquele nó entrega binário e exigiria um nó de
+        # conversão para cada um. Assim continuam sendo arquivos do repositório.
+        node("Buscar prompt de analista", "n8n-nodes-base.httpRequest", 4.5, [600, -110], {
+            "url": "={{ $env.DOCLING_URL }}/prompt/analyst-extraction",
+            "options": {"timeout": 30000},
+        }),
+        node("Buscar schema da ficha", "n8n-nodes-base.httpRequest", 4.5, [600, 110], {
+            "url": "={{ $env.DOCLING_URL }}/schema",
+            "options": {"timeout": 30000},
+        }),
+        node("Preparar extracao", "n8n-nodes-base.code", 2, [820, 0],
+             {"jsCode": INGEST_PREPARE_PROMPT}),
+        node("Extrair ficha", "n8n-nodes-base.executeWorkflow", 1.3, [1020, 0], {
+            "workflowId": {"__rl": True, "value": GATEWAY_ID, "mode": "id"},
+            "options": {"waitForSubWorkflow": True},
+        }),
+        node("Validar ficha", "n8n-nodes-base.httpRequest", 4.5, [1220, 0], {
+            "method": "POST",
+            "url": "={{ $env.DOCLING_URL }}/validate",
+            "sendBody": True,
+            "specifyBody": "json",
+            "jsonBody": "={{ JSON.stringify({ document: $json.parsed }) }}",
+            "options": {"timeout": 60000},
+        }, onError="continueRegularOutput"),
+        node("Conferir resultado", "n8n-nodes-base.code", 2, [1420, 0],
+             {"jsCode": INGEST_CHECK}),
+        node("Ficha valida?", "n8n-nodes-base.if", 2.3, [1620, 0], {
+            "conditions": {
+                "options": {"caseSensitive": True, "typeValidation": "strict", "version": 2},
+                "conditions": [{
+                    "id": "ok",
+                    "operator": {"type": "boolean", "operation": "true", "singleValue": True},
+                    "leftValue": "={{ $json.ok }}",
+                    "rightValue": "",
+                }],
+                "combinator": "and",
+            },
+            "options": {},
+        }),
+        node("Persistir ficha", "n8n-nodes-base.postgres", 2.7, [1840, -110], {
+            "operation": "executeQuery",
+            "query": (
+                "INSERT INTO auction_notices "
+                "(chat_id, file_name, sha256, markdown, deterministic, analysis) "
+                "VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb) "
+                "ON CONFLICT (chat_id, sha256) DO UPDATE SET "
+                "  analysis = EXCLUDED.analysis, "
+                "  deterministic = EXCLUDED.deterministic, "
+                "  created_at = now() "
+                "RETURNING id, chat_id, created_at;"
+            ),
+            # Array, e não string separada por vírgula: o n8n divide a forma
+            # em string por vírgula, e o Markdown do edital tem centenas
+            # delas — os parâmetros se desalinhavam e o INSERT recebia JSON
+            # cortado ao meio ("invalid input syntax for type json").
+            "options": {"queryReplacement":
+                "={{ [$json.chat_id, $json.file_name, $json.sha256, $json.markdown,"
+                " JSON.stringify($json.deterministic), JSON.stringify($json.analysis)] }}"},
+        }, credentials={"postgres": {"id": "leilao-postgres", "name": "Postgres do projeto"}}),
+        node("Resposta de sucesso", "n8n-nodes-base.code", 2, [2040, -110], {"jsCode": """
+const saved = $input.first().json;
+const result = $('Conferir resultado').first().json;
+return [{ json: {
+  ok: true,
+  notice_id: saved.id,
+  chat_id: result.chat_id,
+  analysis: result.analysis,
+  usage: result.usage,
+  cost_usd: result.cost_usd,
+} }];
+"""}),
+        node("Resposta de falha", "n8n-nodes-base.code", 2, [1840, 110], {"jsCode": """
+// Falha explícita e com causa. Persistir ficha parcial seria pior: toda
+// pergunta seguinte responderia com base em dado que ninguém conferiu.
+const r = $input.first().json;
+return [{ json: { ok: false, problems: r.problems, chat_id: r.chat_id, file_name: r.file_name } }];
+"""}),
+    ]
+
+    connections = {
+        "Chamada de outro fluxo": {"main": [[{"node": "Converter PDF", "type": "main", "index": 0}]]},
+        "Converter PDF": {"main": [[{"node": "Extrair campos deterministicos", "type": "main", "index": 0}]]},
+        "Extrair campos deterministicos": {"main": [[{"node": "Buscar prompt de analista", "type": "main", "index": 0}]]},
+        "Buscar prompt de analista": {"main": [[{"node": "Buscar schema da ficha", "type": "main", "index": 0}]]},
+        "Buscar schema da ficha": {"main": [[{"node": "Preparar extracao", "type": "main", "index": 0}]]},
+        "Preparar extracao": {"main": [[{"node": "Extrair ficha", "type": "main", "index": 0}]]},
+        "Extrair ficha": {"main": [[{"node": "Validar ficha", "type": "main", "index": 0}]]},
+        "Validar ficha": {"main": [[{"node": "Conferir resultado", "type": "main", "index": 0}]]},
+        "Conferir resultado": {"main": [[{"node": "Ficha valida?", "type": "main", "index": 0}]]},
+        "Ficha valida?": {"main": [
+            [{"node": "Persistir ficha", "type": "main", "index": 0}],
+            [{"node": "Resposta de falha", "type": "main", "index": 0}],
+        ]},
+        "Persistir ficha": {"main": [[{"node": "Resposta de sucesso", "type": "main", "index": 0}]]},
+    }
+
+    return {
+        "id": INGEST_ID,
+        "name": "02 - Ingestao do edital",
+        "nodes": nodes,
+        "connections": connections,
+        "settings": {"executionOrder": "v1"},
+    }
+
+if __name__ == "__main__":
+    write(OUTPUT, build())
+
+    write(SMOKE_OUTPUT, build_smoke())
+
+    write(INGEST_OUTPUT, build_ingest())
+
+    write(INGEST_SMOKE_OUTPUT, build_ingest_smoke())

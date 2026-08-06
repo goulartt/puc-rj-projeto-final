@@ -1,0 +1,381 @@
+{
+  "id": "editalingest0001",
+  "name": "02 - Ingestao do edital",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "chamada-de-outro-fluxo",
+      "name": "Chamada de outro fluxo",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DOCLING_URL }}/convert",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 900000
+        }
+      },
+      "id": "converter-pdf",
+      "name": "Converter PDF",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DOCLING_URL }}/extract",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ markdown: $json.markdown }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "extrair-campos-deterministicos",
+      "name": "Extrair campos deterministicos",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        400,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.DOCLING_URL }}/prompt/analyst-extraction",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "buscar-prompt-de-analista",
+      "name": "Buscar prompt de analista",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        600,
+        -110
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.DOCLING_URL }}/schema",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "buscar-schema-da-ficha",
+      "name": "Buscar schema da ficha",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        600,
+        110
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Monta a chamada de extração. O prompt e o schema vêm de arquivos montados no\n// container, e não embutidos aqui: assim continuam revisáveis em diff e o\n// mesmo texto que o repositório versiona é o que o modelo recebe.\nconst trigger = $('Chamada de outro fluxo').first().json;\nconst converted = $('Converter PDF').first().json;\nconst markdown = converted.markdown || '';\nconst deterministic = $('Extrair campos deterministicos').first().json;\nconst systemPrompt = $('Buscar prompt de analista').first().json.text;\nconst schema = $('Buscar schema da ficha').first().json.schema;\n\n// Decodificação restrita é otimização, não garantia: quem valida a ficha é o\n// serviço de documentos, logo adiante. O Ollama nao consegue compilar um\n// schema deste tamanho em gramatica GBNF, entao ela fica desligavel por\n// variavel de ambiente sem que o pipeline perca correcao.\n// schema | json | none — o que o provedor consegue impor. A DeepSeek recusa\n// json_schema (\"This response_format type is unavailable now\") e aceita json;\n// o Ollama nao compila um schema deste tamanho em gramatica. Em qualquer modo\n// quem garante o contrato e a validacao posterior.\nconst structuredMode = String($env.LLM_EXTRACTION_STRUCTURED || 'schema');\nconst providerEnforcesSchema = structuredMode === 'schema';\n\nif (!markdown.trim()) {\n  throw new Error('Docling devolveu markdown vazio — edital ilegivel ou conversao falhou.');\n}\n\n// O bloco determinístico entra como conferência, não como verdade. O prompt\n// instrui o modelo a marcar confidence: low onde discordar do texto.\nconst hint = JSON.stringify({\n  court_case: deterministic.court_case,\n  cited_numbers: deterministic.cited_numbers,\n}, null, 2);\n\n// Sem decodificação restrita o modelo precisa VER o schema: descrever os\n// campos em prosa não basta, e a primeira versão deste fluxo os omitia por\n// completo — o modelo inventava a estrutura e a validação reprovava tudo.\n// Montado com join em vez de escapes: este bloco vive dentro de uma string\n// Python, onde uma barra-n sozinha viraria quebra de linha de verdade e\n// partiria o literal JavaScript ao meio.\nconst schemaInstruction = providerEnforcesSchema ? '' : [\n  '',\n  '',\n  'ESQUEMA OBRIGATORIO DA RESPOSTA (JSON Schema). Responda com um unico objeto',\n  'JSON que satisfaca este esquema, sem texto ao redor. Nao invente campos:',\n  '`additionalProperties` e false em todos os niveis.',\n  '',\n  // Sem esta linha o modelo aninhou `auctioneer_fee` e `payment` dentro de\n  // `debts`. Enumerar as chaves de topo custa poucos tokens e evita o erro.\n  'As chaves de PRIMEIRO NIVEL sao exatamente estas, nenhuma aninhada em outra: '\n    + Object.keys(schema.properties).join(', ') + '.',\n  JSON.stringify(schema),\n].join(String.fromCharCode(10));\n\nreturn [{ json: {\n  role: 'extraction',\n  system: systemPrompt + schemaInstruction,\n  schema,\n  structuredMode,\n  // Cache no bloco de sistema: o prompt de analista é idêntico entre editais.\n  cacheSystem: true,\n  // Modelo de raciocinio gasta boa parte do orcamento de saida pensando: o\n  // deepseek-v4-flash consumiu 24 mil tokens de reasoning neste edital e so\n  // depois escreveu a ficha. Com 16 mil ele terminava em finish_reason=length\n  // e conteudo vazio.\n  maxTokens: Number($env.LLM_EXTRACTION_MAX_TOKENS || 16000),\n  expectJson: true,\n  messages: [{ role: 'user', content:\n    'EXTRACAO DETERMINISTICA (confira contra o texto):\\n' + hint +\n    '\\n\\nEDITAL:\\n' + markdown }],\n  // Carregado adiante, na persistência.\n  _chat_id: trigger.chat_id,\n  _file_name: trigger.file_name,\n  _markdown: markdown,\n  _sha256: converted.sha256,\n  _deterministic: deterministic,\n} }];\n"
+      },
+      "id": "preparar-extracao",
+      "name": "Preparar extracao",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        820,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "llmgateway0000001",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "extrair-ficha",
+      "name": "Extrair ficha",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        1020,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DOCLING_URL }}/validate",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ document: $json.parsed }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "validar-ficha",
+      "name": "Validar ficha",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.5,
+      "position": [
+        1220,
+        0
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Decide se a ficha pode ser persistida. Ficha que não valida não entra no\n// banco: uma ficha parcial envenena silenciosamente toda pergunta seguinte.\nconst prepared = $('Preparar extracao').first().json;\nconst gateway = $('Extrair ficha').first().json;\nconst check = $('Validar ficha').first().json;\n\nconst problems = [];\nif (gateway.blocked) problems.push('gateway bloqueou: ' + gateway.reason);\nif (gateway.refusal) problems.push('modelo recusou a requisicao');\nif (gateway.error) problems.push('erro do provedor: ' + String(gateway.error).slice(0, 200));\nif (gateway.parse_failed) problems.push('resposta do modelo nao era JSON');\nif (check && check.valid === false) {\n  problems.push('ficha invalida (' + check.error_count + ' erro(s)): ' +\n    (check.errors || []).slice(0, 3).map((e) => e.path + ': ' + e.message).join(' | '));\n}\n\nreturn [{ json: {\n  ok: problems.length === 0,\n  problems,\n  chat_id: prepared._chat_id,\n  file_name: prepared._file_name,\n  // Hash calculado pelo serviço sobre os bytes do PDF. O sandbox do nó de\n  // código nao expõe `crypto`, e o hash do arquivo é a chave certa de qualquer\n  // forma — o do Markdown mudaria numa atualização do conversor.\n  sha256: prepared._sha256,\n  markdown: prepared._markdown,\n  deterministic: prepared._deterministic,\n  analysis: gateway.parsed || null,\n  usage: gateway.usage || null,\n  cost_usd: gateway.cost_usd ?? null,\n} }];\n"
+      },
+      "id": "conferir-resultado",
+      "name": "Conferir resultado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1420,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ok",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.ok }}",
+              "rightValue": ""
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ficha-valida?",
+      "name": "Ficha valida?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.3,
+      "position": [
+        1620,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO auction_notices (chat_id, file_name, sha256, markdown, deterministic, analysis) VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb) ON CONFLICT (chat_id, sha256) DO UPDATE SET   analysis = EXCLUDED.analysis,   deterministic = EXCLUDED.deterministic,   created_at = now() RETURNING id, chat_id, created_at;",
+        "options": {
+          "queryReplacement": "={{ [$json.chat_id, $json.file_name, $json.sha256, $json.markdown, JSON.stringify($json.deterministic), JSON.stringify($json.analysis)] }}"
+        }
+      },
+      "id": "persistir-ficha",
+      "name": "Persistir ficha",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        1840,
+        -110
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "leilao-postgres",
+          "name": "Postgres do projeto"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst saved = $input.first().json;\nconst result = $('Conferir resultado').first().json;\nreturn [{ json: {\n  ok: true,\n  notice_id: saved.id,\n  chat_id: result.chat_id,\n  analysis: result.analysis,\n  usage: result.usage,\n  cost_usd: result.cost_usd,\n} }];\n"
+      },
+      "id": "resposta-de-sucesso",
+      "name": "Resposta de sucesso",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2040,
+        -110
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Falha explícita e com causa. Persistir ficha parcial seria pior: toda\n// pergunta seguinte responderia com base em dado que ninguém conferiu.\nconst r = $input.first().json;\nreturn [{ json: { ok: false, problems: r.problems, chat_id: r.chat_id, file_name: r.file_name } }];\n"
+      },
+      "id": "resposta-de-falha",
+      "name": "Resposta de falha",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1840,
+        110
+      ]
+    }
+  ],
+  "connections": {
+    "Chamada de outro fluxo": {
+      "main": [
+        [
+          {
+            "node": "Converter PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Converter PDF": {
+      "main": [
+        [
+          {
+            "node": "Extrair campos deterministicos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extrair campos deterministicos": {
+      "main": [
+        [
+          {
+            "node": "Buscar prompt de analista",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar prompt de analista": {
+      "main": [
+        [
+          {
+            "node": "Buscar schema da ficha",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar schema da ficha": {
+      "main": [
+        [
+          {
+            "node": "Preparar extracao",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar extracao": {
+      "main": [
+        [
+          {
+            "node": "Extrair ficha",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extrair ficha": {
+      "main": [
+        [
+          {
+            "node": "Validar ficha",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validar ficha": {
+      "main": [
+        [
+          {
+            "node": "Conferir resultado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Conferir resultado": {
+      "main": [
+        [
+          {
+            "node": "Ficha valida?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ficha valida?": {
+      "main": [
+        [
+          {
+            "node": "Persistir ficha",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Resposta de falha",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Persistir ficha": {
+      "main": [
+        [
+          {
+            "node": "Resposta de sucesso",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

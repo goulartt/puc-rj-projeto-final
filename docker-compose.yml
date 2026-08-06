@@ -40,6 +40,13 @@ services:
       # imagem slim não tem g++. Em CPU o ganho não paga o compilador extra,
       # então desligamos o dynamo em vez de instalar build-essential.
       TORCHDYNAMO_DISABLE: "1"
+    volumes:
+      # Montados, e não copiados na imagem: mudar um extrator ou o schema não
+      # deve exigir rebuild de uma imagem de 3GB. É também o mesmo código que
+      # o pytest cobre, sem cópia intermediária.
+      - ./services/extractors:/app/lib/extractors:ro
+      - ./schemas:/app/schemas:ro
+      - ./prompts:/app/prompts:ro
     ports:
       - "127.0.0.1:5001:5001"
     healthcheck:
@@ -78,12 +85,21 @@ services:
       # provider sem editar workflow. Sem isso, a abstração não funciona.
       N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
 
+      # O nó de leitura de arquivo é bloqueado por padrão. Só o smoke test da
+      # ingestão precisa ler do disco; prompts e schema vêm por HTTP do serviço
+      # de documentos. Separador é `;`, não `:` — com `:` o n8n trata a linha
+      # inteira como um único caminho e bloqueia tudo em silêncio.
+      N8N_RESTRICT_FILE_ACCESS_TO: "/data"
+
       # Variáveis consumidas pelos fluxos
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
       LLM_EXTRACTION_PROVIDER: ${LLM_EXTRACTION_PROVIDER}
       LLM_EXTRACTION_MODEL: ${LLM_EXTRACTION_MODEL}
       LLM_EXTRACTION_BASE_URL: ${LLM_EXTRACTION_BASE_URL}
       LLM_EXTRACTION_API_KEY: ${LLM_EXTRACTION_API_KEY}
+      # schema | json | none — quanto de estrutura o provedor consegue impor.
+      LLM_EXTRACTION_STRUCTURED: ${LLM_EXTRACTION_STRUCTURED:-schema}
+      LLM_EXTRACTION_MAX_TOKENS: ${LLM_EXTRACTION_MAX_TOKENS:-16000}
       LLM_QA_PROVIDER: ${LLM_QA_PROVIDER}
       LLM_QA_MODEL: ${LLM_QA_MODEL}
       LLM_QA_BASE_URL: ${LLM_QA_BASE_URL}
@@ -100,8 +116,7 @@ services:
     volumes:
       - n8n-data:/home/node/.n8n
       - ./workflows:/workflows:ro
-      - ./prompts:/prompts:ro
-      - ./schemas:/schemas:ro
+      - ./data:/data:ro
     ports:
       - "127.0.0.1:5678:5678"
     extra_hosts:

@@ -1,0 +1,104 @@
+{
+  "id": "ingestsmoke00001",
+  "name": "98 - Smoke test da ingestao",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "disparo-manual",
+      "name": "Disparo manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "fileSelector": "/data/editais/edital-exemplo.pdf",
+        "options": {
+          "dataPropertyName": "data"
+        }
+      },
+      "id": "ler-edital-do-disco",
+      "name": "Ler edital do disco",
+      "type": "n8n-nodes-base.readWriteFile",
+      "typeVersion": 1.1,
+      "position": [
+        200,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// chat_id fixo de teste: a ingestao guarda a ficha por chat, e o smoke test\n// precisa de um identificador estavel para poder reexecutar sem duplicar.\nreturn [{ json: { chat_id: 'smoke-test', file_name: 'edital-exemplo.pdf' },\n          binary: $input.first().binary }];\n"
+      },
+      "id": "identificar-o-chat",
+      "name": "Identificar o chat",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "editalingest0001",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "chamar-ingestao",
+      "name": "Chamar ingestao",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        600,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Disparo manual": {
+      "main": [
+        [
+          {
+            "node": "Ler edital do disco",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ler edital do disco": {
+      "main": [
+        [
+          {
+            "node": "Identificar o chat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Identificar o chat": {
+      "main": [
+        [
+          {
+            "node": "Chamar ingestao",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

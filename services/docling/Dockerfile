@@ -30,6 +30,8 @@ RUN pip install --index-url https://download.pytorch.org/whl/cpu torch torchvisi
 # é bem mais leve que o easyocr e não precisa de GPU.
 RUN docling-tools models download -o /opt/docling-models layout tableformer rapidocr
 
+# Extratores e schema vêm do repositório, não são copiados à mão: o serviço
+# reusa exatamente o código coberto por pytest.
 COPY app.py .
 
 EXPOSE 5001

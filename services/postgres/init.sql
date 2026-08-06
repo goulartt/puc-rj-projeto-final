@@ -38,6 +38,10 @@ CREATE TABLE IF NOT EXISTS llm_calls (
     output_tokens INTEGER       NOT NULL DEFAULT 0,
     cached_tokens INTEGER       NOT NULL DEFAULT 0,
     cost_usd      NUMERIC(10,6) NOT NULL DEFAULT 0,
+    -- Chamada que falhou também é registrada: saber que houve tentativa importa.
+    -- Sem esta coluna, uma falha (custo zero, tokens zero) fica indistinguível
+    -- de uma chamada local bem-sucedida no mesmo log.
+    error         TEXT,
     created_at    TIMESTAMPTZ   NOT NULL DEFAULT now()
 );
 
@@ -48,6 +52,15 @@ CREATE INDEX IF NOT EXISTS llm_calls_created ON llm_calls (created_at DESC);
 CREATE OR REPLACE VIEW budget_spent AS
     SELECT COALESCE(SUM(cost_usd), 0)::NUMERIC(10,6) AS total_usd
       FROM llm_calls;
+
+-- Taxa de erro por modelo, para a avaliação da Fase 7.
+CREATE OR REPLACE VIEW llm_call_health AS
+    SELECT provider, model,
+           count(*)                                  AS calls,
+           count(*) FILTER (WHERE error IS NOT NULL) AS failures,
+           round(SUM(cost_usd), 6)                   AS cost_usd
+      FROM llm_calls
+     GROUP BY provider, model;
 
 -- ─── Deduplicação do scrape (iteração 2) ────────────────────────────────────
 CREATE TABLE IF NOT EXISTS scraped_listings (

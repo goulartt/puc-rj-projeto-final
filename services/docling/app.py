@@ -1,24 +1,42 @@
-"""PDF -> Markdown conversion service backed by Docling.
+"""Serviço de processamento de documentos do assistente.
 
-Single responsibility: turn an edital PDF into Markdown that preserves tables
-and numbered clauses. Everything downstream (regex extractors, the LLM) reads
-this output, so conversion quality caps the whole pipeline's quality.
+Três responsabilidades, reunidas aqui porque compartilham o mesmo ambiente
+Python e o mesmo código já testado:
 
-OCR is off by default: auction editais are normally born-digital PDFs with a
-text layer, and running OCR on those is slow and adds transcription noise.
-Send `ocr=true` for scanned documents.
+- `POST /convert`  — PDF do edital vira Markdown, preservando tabelas e
+  cláusulas numeradas. Tudo o que vem depois lê essa saída, então a qualidade
+  da conversão limita a qualidade de todo o resto.
+- `POST /extract`  — extratores determinísticos sobre o Markdown. Ficam aqui, e
+  não num nó de código do n8n, porque o nó é JavaScript: reimplementar a
+  validação de dígito verificador em outra linguagem criaria uma segunda cópia
+  sem teste.
+- `POST /validate` — valida uma ficha contra `ficha.schema.json`. Mesma razão:
+  o validador de JSON Schema vive no ambiente que já o tem.
+
+O OCR é opcional e desligado por padrão: editais costumam ser PDFs nativos com
+camada de texto, e rodar OCR neles é lento e acrescenta ruído de transcrição.
+Use `ocr=true` para documentos digitalizados.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
+import re
+import sys
 import tempfile
 import time
 from pathlib import Path
+from typing import Any
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+import jsonschema
+from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
+
+sys.path.insert(0, "/app/lib")
+from extractors import cnj  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("docling-service")
@@ -58,9 +76,149 @@ def _get_converter(use_ocr: bool):
     return converter
 
 
+SCHEMA_PATH = Path("/app/schemas/ficha.schema.json")
+PROMPTS_DIR = Path("/app/prompts")
+
+
 @app.get("/health")
 def health() -> dict:
-    return {"status": "ok", "artifacts_path": os.getenv("DOCLING_ARTIFACTS_PATH")}
+    return {
+        "status": "ok",
+        "artifacts_path": os.getenv("DOCLING_ARTIFACTS_PATH"),
+        "schema_loaded": SCHEMA_PATH.is_file(),
+        "prompts": sorted(p.stem for p in PROMPTS_DIR.glob("*.md")) if PROMPTS_DIR.is_dir() else [],
+    }
+
+
+@app.get("/prompt/{name}")
+def prompt(name: str) -> JSONResponse:
+    """Devolve um prompt do repositório como texto.
+
+    Serve daqui, e não de um nó de leitura de arquivo do n8n, por dois motivos:
+    o nó de leitura entrega binário e exigiria um nó extra de conversão para
+    cada arquivo, e assim os prompts continuam sendo `.md` revisáveis em diff
+    em vez de texto embutido no JSON do fluxo.
+    """
+    # Impede que `name` escape do diretório de prompts.
+    if not re.fullmatch(r"[a-z0-9-]+", name):
+        raise HTTPException(status_code=400, detail="nome de prompt invalido")
+
+    path = PROMPTS_DIR / f"{name}.md"
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail=f"prompt nao encontrado: {name}")
+
+    return JSONResponse({"name": name, "text": path.read_text()})
+
+
+def _dereference(node: Any, defs: dict, depth: int = 0) -> Any:
+    """Expande `$ref` locais, devolvendo um schema sem `$defs`.
+
+    O Ollama compila o schema numa gramática GBNF para decodificação
+    restrita e falha com "failed to parse grammar" diante de `$ref`. A API da
+    Anthropic aceita referências, mas a forma achatada funciona nos dois, então
+    é ela que servimos.
+
+    A profundidade é limitada porque `$ref` recursivo geraria expansão
+    infinita. O schema da ficha não tem recursão; o limite é rede de proteção.
+    """
+    if depth > 20:
+        raise HTTPException(status_code=500, detail="schema com referencia recursiva")
+
+    if isinstance(node, dict):
+        if "$ref" in node:
+            ref = node["$ref"]
+            if not ref.startswith("#/$defs/"):
+                raise HTTPException(status_code=500, detail=f"referencia externa nao suportada: {ref}")
+            target = defs.get(ref.removeprefix("#/$defs/"))
+            if target is None:
+                raise HTTPException(status_code=500, detail=f"referencia quebrada: {ref}")
+            # Campos irmãos do $ref (como `description`) prevalecem sobre o alvo.
+            merged = {**target, **{k: v for k, v in node.items() if k != "$ref"}}
+            return _dereference(merged, defs, depth + 1)
+        return {k: _dereference(v, defs, depth + 1) for k, v in node.items() if k != "$defs"}
+
+    if isinstance(node, list):
+        return [_dereference(item, defs, depth + 1) for item in node]
+
+    return node
+
+
+@app.get("/schema")
+def schema(dereference: bool = True) -> JSONResponse:
+    """Devolve o schema da ficha, para o fluxo pedir saída estruturada.
+
+    Por padrão sem `$ref`, que é a forma que todo provedor aceita. Use
+    `?dereference=false` para inspecionar o schema como está no repositório.
+    """
+    if not SCHEMA_PATH.is_file():
+        raise HTTPException(status_code=500, detail=f"schema ausente em {SCHEMA_PATH}")
+
+    raw = json.loads(SCHEMA_PATH.read_text())
+    if not dereference:
+        return JSONResponse({"schema": raw})
+
+    flat = _dereference(raw, raw.get("$defs", {}))
+    # Metadados de documento não ajudam o decodificador e só gastam tokens.
+    for key in ("$schema", "$id", "title"):
+        flat.pop(key, None)
+    return JSONResponse({"schema": flat})
+
+
+@app.post("/extract")
+def extract(payload: dict = Body(...)) -> JSONResponse:
+    """Extração determinística sobre o Markdown do edital.
+
+    A saída alimenta o prompt do modelo como dica **e** serve de conferência da
+    resposta dele. Divergência entre os dois vira `confidence: low` na ficha,
+    em vez de um desempate silencioso.
+    """
+    markdown = payload.get("markdown") or ""
+    if not markdown.strip():
+        raise HTTPException(status_code=400, detail="markdown vazio")
+
+    main = cnj.main_case(markdown)
+    all_numbers = cnj.extract(markdown)
+
+    return JSONResponse(
+        {
+            "court_case": main.to_dict() if main else None,
+            # Precedentes citados no juridiquês do edital. Registrados para
+            # auditoria e explicitamente fora da consulta ao DataJud: são
+            # causas alheias ao imóvel.
+            "cited_numbers": [n.number for n in all_numbers if n.role == cnj.ROLE_CITED],
+            "candidates": [n.to_dict() for n in all_numbers],
+        }
+    )
+
+
+@app.post("/validate")
+def validate(payload: dict = Body(...)) -> JSONResponse:
+    """Valida uma ficha contra o schema. Ficha inválida não deve ser persistida."""
+    if not SCHEMA_PATH.is_file():
+        raise HTTPException(status_code=500, detail=f"schema ausente em {SCHEMA_PATH}")
+
+    document: Any = payload.get("document")
+    if document is None:
+        raise HTTPException(status_code=400, detail="campo `document` ausente")
+
+    # `_meta` é anotação nossa, não faz parte do contrato do modelo.
+    if isinstance(document, dict):
+        document = {k: v for k, v in document.items() if k != "_meta"}
+
+    schema = json.loads(SCHEMA_PATH.read_text())
+    validator = jsonschema.Draft202012Validator(schema)
+    errors = sorted(validator.iter_errors(document), key=lambda e: list(e.path))
+
+    return JSONResponse(
+        {
+            "valid": not errors,
+            "errors": [
+                {"path": "/".join(str(p) for p in e.path) or "(raiz)", "message": e.message[:300]}
+                for e in errors[:20]
+            ],
+            "error_count": len(errors),
+        }
+    )
 
 
 @app.post("/convert")
@@ -107,6 +265,10 @@ async def convert(
     return JSONResponse(
         {
             "markdown": markdown,
+            # Hash dos bytes do PDF, não do Markdown: é a chave de deduplicação,
+            # e o Markdown mudaria numa atualização do Docling, fazendo o mesmo
+            # arquivo parecer novo.
+            "sha256": hashlib.sha256(data).hexdigest(),
             "chars": len(markdown),
             "pages": pages,
             "ocr": ocr,

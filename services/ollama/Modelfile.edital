@@ -1,0 +1,11 @@
+# Variante do qwen3:14b com contexto grande o bastante para um edital inteiro.
+#
+# O padrão do Ollama é 4096 tokens, e só o Markdown de um edital de 4 páginas
+# já passa disso — somado ao prompt de analista e ao schema, a janela padrão
+# truncaria a entrada em silêncio e a ficha sairia incompleta sem erro visível.
+#
+#   ollama create qwen3-edital -f services/ollama/Modelfile.edital
+#
+# 32k de contexto num 14B q4 cabe na RTX 4070 Ti Super de 16GB com folga.
+FROM qwen3:14b
+PARAMETER num_ctx 32768
