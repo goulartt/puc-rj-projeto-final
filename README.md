@@ -135,7 +135,7 @@ clique num editor.
 | Extração e validação de número CNJ | **3/3** |
 | Acordo determinístico × modelo | **6/6** |
 | Citação verificável na ficha gerada | **33/36 (92%)** |
-| Custo por edital | **US$ 0,011** |
+| Custo por edital | **US$ 0,004** |
 | Custo por pergunta | **US$ 0** (modelo local) |
 
 ### O número que mudou o desenho

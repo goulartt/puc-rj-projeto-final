@@ -124,7 +124,7 @@ services:
       # Quanto o modelo pensa. Vazio = padrao do provedor. Ver a medicao em
       # docs/evidence/ antes de mexer: e a unica alavanca com efeito real sobre
       # o tempo, e o efeito na qualidade da ficha esta medido la.
-      LLM_EXTRACTION_REASONING: ${LLM_EXTRACTION_REASONING:-}
+      LLM_EXTRACTION_REASONING: ${LLM_EXTRACTION_REASONING:-minimal}
       LLM_QA_REASONING: ${LLM_QA_REASONING:-}
       LLM_QA_PROVIDER: ${LLM_QA_PROVIDER}
       LLM_QA_MODEL: ${LLM_QA_MODEL}
