@@ -35,6 +35,16 @@ _PADDED_QUOTE = re.compile(r'\s*"\s*')
 CITATION_PART_SEPARATOR = "[...]"
 MIN_CITATION_LENGTH = 12
 
+# O prompt pede `[...]` para juntar trechos distantes, e o modelo às vezes
+# escreve `...` ou `…` solto. A intenção é a mesma e inequívoca; exigir a forma
+# exata mediria obediência ao formato do prompt, não veracidade da citação —
+# que é o que esta conferência existe para medir.
+#
+# Dividir não afrouxa nada: cada fragmento continua tendo de aparecer no
+# documento. Uma citação em que o modelo inventou a segunda metade segue
+# reprovando.
+_ELLIPSIS = re.compile(r"\s*(?:\[\.\.\.\]|\.{3,}|…)\s*")
+
 
 def normalize(text: str, *, casefold: bool = True) -> str:
     """Reduz o texto a uma forma comparável, preservando as palavras.
@@ -72,12 +82,12 @@ def contains_citation(
 ) -> bool:
     """Diz se `citation` aparece em `document`, ignorando artefatos de conversão.
 
-    Citações compostas usam `[...]` para juntar partes distantes do texto; cada
+    Citações compostas juntam partes distantes do texto com reticências; cada
     parte é conferida separadamente. Fragmentos muito curtos são ignorados,
     porque casariam por acaso e não provariam nada.
     """
     haystack = _for_comparison(document)
-    for part in citation.split(CITATION_PART_SEPARATOR):
+    for part in _ELLIPSIS.split(citation):
         needle = _for_comparison(part)
         if len(needle) < minimum_length:
             continue
