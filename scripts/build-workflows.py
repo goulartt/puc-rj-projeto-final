@@ -1526,7 +1526,11 @@ const appraisal = a.appraisal || {};
 const out = [];
 // O aviso de multiplos imoveis vem antes de tudo: ele muda o sentido de tudo
 // que vem depois, porque a ficha descreve um lote e nao o edital.
-if (view.warning) out.push('⚠️ ' + bold(esc(view.warning)), '');
+if (view.warning) {
+  out.push('⚠️ ' + bold(esc(view.warning)));
+  (view.warning_lots || []).forEach((l, i) => out.push((i + 1) + '. ' + esc(l)));
+  out.push('');
+}
 out.push(
   bold('Ficha do edital') + ' — ' + esc(routed.file_name || 'documento'),
   '',

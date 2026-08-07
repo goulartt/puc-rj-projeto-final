@@ -275,6 +275,73 @@ def count_properties(text: str) -> int:
     return len(registries)
 
 
+# Ordenados do mais específico para o mais ambíguo, e a ordem é a regra de
+# desempate. Nem a primeira nem a última menção servem: `lote` e `vaga`
+# aparecem como parte do endereço ("Lote nº 32 da Quadra 07") e como acessório
+# ("apartamento com vaga de garagem"), então uma janela pode conter os três.
+# Ganha o termo mais específico presente.
+_LOT_KINDS = [
+    "apartamento", "casa", "sobrado", "pr[ée]dio", "barrac[ãa]o",
+    "sala comercial", "loja", "ch[áa]cara", "s[íi]tio", "fazenda",
+    "gleba", "terreno", "sala", "lote", "vaga",
+]
+_LOT_KIND = re.compile(r"(?i)\b(" + "|".join(_LOT_KINDS) + r")\b")
+_LOT_CITY = re.compile(r"(?i)Comarca de\s+([A-ZÁ-Ú][\wÀ-ú\s]{2,28}?/[A-Z]{2})")
+# Janela antes da matrícula onde o edital descreve o imóvel. Depois dela vem o
+# cartório e o próximo lote.
+LOT_WINDOW = 420
+
+
+def lots(text: str) -> list[dict[str, Any]]:
+    """Um registro por imóvel do edital, na ordem em que aparecem.
+
+    Serve à pergunta "qual destes você quer analisar?". A descrição sai do
+    trecho que **antecede** a matrícula, que é onde o edital descreve o bem —
+    depois dela vem o cartório e o lote seguinte.
+
+    Cada matrícula aparece uma vez só na lista, mesmo citada várias vezes ao
+    longo do documento, e vence a ocorrência mais informativa.
+    """
+    flat = _flatten(text)
+    by_registry: dict[str, dict[str, Any]] = {}
+
+    for found in property_registry(text):
+        position = flat.find(found.raw)
+        window = flat[max(0, position - LOT_WINDOW):position] if position >= 0 else ""
+        matches = {m.lower() for m in _LOT_KIND.findall(window)}
+        kind = next((k for k in _LOT_KINDS
+                     if any(re.fullmatch(k, m, re.IGNORECASE) for m in matches)), None)
+        city = _LOT_CITY.findall(window)
+        amounts = sorted((m.value for m in money(window)), reverse=True)
+
+        candidate = {
+            "registry": found.value,
+            "kind": _kind_label(kind, matches) if kind else None,
+            "city": city[-1].strip() if city else None,
+            # O maior valor da janela é a avaliação; o menor costuma ser o
+            # lance mínimo da segunda praça.
+            "appraisal": amounts[0] if amounts else None,
+        }
+        current = by_registry.get(found.value)
+        if current is None or _score(candidate) > _score(current):
+            by_registry[found.value] = candidate
+
+    return list(by_registry.values())
+
+
+def _kind_label(pattern: str, matches: set[str]) -> str:
+    """Devolve como o edital escreveu, e não o padrão da lista."""
+    for text in matches:
+        if re.fullmatch(pattern, text, re.IGNORECASE):
+            return text.title()
+    return pattern.title()
+
+
+def _score(lot: dict[str, Any]) -> int:
+    """Quantos campos a ocorrência conseguiu preencher."""
+    return sum(1 for key in ("kind", "city", "appraisal") if lot.get(key))
+
+
 def multi_lot(text: str) -> dict[str, Any]:
     """Diz se o edital cobre mais de um imóvel.
 
@@ -287,8 +354,8 @@ def multi_lot(text: str) -> dict[str, Any]:
     Aviso que aparece em todo edital deixa de ser aviso. Perder um caso é pior
     que nada, mas é melhor que treinar a pessoa a ignorar a linha.
     """
-    properties = count_properties(text)
-    return {"properties": properties, "multi": properties > 1}
+    found = lots(text)
+    return {"properties": len(found), "multi": len(found) > 1, "lots": found}
 
 
 # ─── CPF e CNPJ ─────────────────────────────────────────────────────────────

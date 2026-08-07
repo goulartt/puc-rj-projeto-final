@@ -345,6 +345,26 @@ def _gap_about(ficha: dict, prefix: str) -> bool:
     return any((g.get("field") or "").startswith(prefix) for g in (ficha.get("gaps") or []))
 
 
+# ─── Lotes de um edital ─────────────────────────────────────────────────────
+
+def describe_lots(lots: list[dict]) -> list[str]:
+    """Uma linha por imóvel, para a pessoa escolher qual quer analisar.
+
+    Montada sem modelo: tipo, matrícula e valor saem de expressão regular sobre
+    o trecho que antecede cada matrícula. Custa zero e sai em segundos, o que é
+    o ponto — a pergunta precisa chegar antes da extração, e não depois dela.
+    """
+    linhas = []
+    for lot in lots:
+        partes = [lot.get("kind") or "Imóvel", f"matrícula {lot['registry']}"]
+        if lot.get("appraisal"):
+            partes.append(f"avaliado em {_brl(lot['appraisal'])}")
+        if lot.get("city"):
+            partes.append(lot["city"])
+        linhas.append(" — ".join(partes))
+    return linhas
+
+
 # ─── Composição ─────────────────────────────────────────────────────────────
 
 def present(ficha: dict, case: dict | None = None, *, max_items: int = 3,
@@ -359,15 +379,21 @@ def present(ficha: dict, case: dict | None = None, *, max_items: int = 3,
     # sem esta linha ela seria lida como se descrevesse o edital.
     lots = (deterministic or {}).get("multi_lot") or {}
     warning = None
+    warning_lots: list[str] = []
     if lots.get("multi"):
         warning = (
             f"Este edital cobre {lots['properties']} imóveis. A ficha abaixo "
-            "descreve apenas um deles — confira no PDF qual lote lhe interessa "
-            "antes de dar lance."
+            "descreve apenas um deles:"
         )
+        # Listar vale mais que contar: com a lista a pessoa reconhece o imóvel
+        # que procura e sabe se a ficha é dele. Só com o número, ela teria de
+        # abrir o PDF para descobrir — que é o trabalho que o produto deveria
+        # estar poupando.
+        warning_lots = describe_lots(lots.get("lots") or [])
 
     return {
         "warning": warning,
+        "warning_lots": warning_lots,
         "risks": [
             {"description": r.get("description"), "severity": r.get("severity")}
             for r in (specific or ranked)[:max_items]

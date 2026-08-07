@@ -186,6 +186,26 @@ def test_varias_matriculas_disparam_o_aviso() -> None:
     assert resultado["properties"] == 3
 
 
+def test_tipo_do_imovel_vence_o_termo_mais_especifico() -> None:
+    """`Lote nº 32 da Quadra 07` e endereco; `apartamento` e o bem.
+
+    Nem a primeira nem a ultima mencao servem — uma janela pode ter as duas, e
+    um apartamento "com vaga de garagem" ja virou "Vaga" por pegar a ultima.
+    """
+    texto = ("Apartamento nº 112, situado no Lote nº 32 da Quadra 07, com vaga "
+             "de garagem, objeto da matrícula nº 81.909 do Registro de Imóveis")
+    assert fields.lots(texto)[0]["kind"] == "Apartamento"
+
+
+def test_lote_descreve_valor_e_comarca_quando_o_edital_traz() -> None:
+    texto = ("Casa avaliada em R$ 75.000,00, na Comarca de Londrina/PR, objeto "
+             "da matrícula nº 9.937 do Cartório de Registro de Imóveis")
+    lot = fields.lots(texto)[0]
+    assert lot["kind"] == "Casa"
+    assert lot["appraisal"] == 75000.0
+    assert lot["city"] == "Londrina/PR"
+
+
 def test_a_mesma_matricula_repetida_nao_e_multi_lote() -> None:
     texto = ("matrícula nº 106.233 do Registro de Imóveis; "
              "conforme a matrícula nº 106.233 do Registro de Imóveis")

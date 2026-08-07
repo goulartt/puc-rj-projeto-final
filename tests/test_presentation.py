@@ -232,8 +232,8 @@ def test_present_traduz_as_lacunas() -> None:
 
 def test_ficha_vazia_nao_quebra() -> None:
     saida = presentation.present({})
-    assert saida == {"warning": None, "risks": [], "risks_generic_hidden": 0,
-                     "gaps": [], "highlights": []}
+    assert saida == {"warning": None, "warning_lots": [], "risks": [],
+                     "risks_generic_hidden": 0, "gaps": [], "highlights": []}
 
 
 def test_aviso_de_edital_com_varios_imoveis() -> None:
@@ -242,7 +242,23 @@ def test_aviso_de_edital_com_varios_imoveis() -> None:
         {}, deterministic={"multi_lot": {"multi": True, "properties": 7}}
     )
     assert "7 imóveis" in saida["warning"]
-    assert "confira no PDF" in saida["warning"]
+    assert "apenas um deles" in saida["warning"]
+
+
+def test_o_aviso_lista_os_imoveis() -> None:
+    """Contar nao basta: com a lista a pessoa reconhece o imovel que procura."""
+    saida = presentation.present({}, deterministic={"multi_lot": {
+        "multi": True, "properties": 2,
+        "lots": [
+            {"registry": "81.909", "kind": "Apartamento", "appraisal": 600000.0,
+             "city": None},
+            {"registry": "9.937", "kind": "Casa", "appraisal": None,
+             "city": "Londrina/PR"},
+        ]}})
+    assert saida["warning_lots"] == [
+        "Apartamento — matrícula 81.909 — avaliado em R$ 600.000,00",
+        "Casa — matrícula 9.937 — Londrina/PR",
+    ]
 
 
 def test_edital_de_um_imovel_nao_gera_aviso() -> None:
