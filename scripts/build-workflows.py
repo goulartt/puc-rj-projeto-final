@@ -1627,10 +1627,13 @@ const result = $('Chamar ingestao').first().json;
 // portugues, risco generico ja despriorizado e destaque ja derivado. Aqui so
 // se formata.
 const view = $input.first().json;
-// Uma mensagem do Telegram carrega no maximo um documento, entao ha exatamente
-// um item nesta rota.
-const routed = $('Aplicar escopo').all()
-  .filter((i) => i.json.route === 'document')[0].json;
+// O nome do arquivo vem de `Decidir escolha`, e nao do roteador.
+//
+// Desde que a confirmacao de lote existe, a ficha e montada no turno em que a
+// pessoa responde "sim" — e nesse turno nao ha documento nenhum na conversa.
+// Filtrar por `route === 'document'` devolvia lista vazia e o `[0].json`
+// derrubava a execucao depois de a extracao ja ter sido paga.
+const routed = $('Decidir escolha').first().json;
 const NL = String.fromCharCode(10);
 
 if (!result.ok) {
@@ -2044,6 +2047,39 @@ return [
 """
 
 
+CHAT_CHOICE_SMOKE_ID = "chatchoicesmoke01"
+CHAT_CHOICE_SMOKE_OUTPUT = ROOT / "tests" / "workflows" / "95-chat-escolha-smoke.json"
+
+CHAT_CHOICE_MESSAGES = """
+// Segundo turno isolado: so a resposta da pessoa, sem o PDF na conversa.
+//
+// O smoke do chat manda todas as mensagens numa execucao so, e por isso o item
+// de documento existe mesmo quando se testa a escolha. Isso escondeu um
+// defeito que chegou ao usuario: `Resposta da ficha` buscava o nome do arquivo
+// filtrando `route === 'document'`, e em producao esse item nao existe no
+// turno da confirmacao. Aqui ele nao existe tambem.
+//
+// Exige um edital pendente no banco — rode o 96 antes.
+return [{ json: { message: { chat: { id: 'smoke-test' }, text: 'sim' } } }];
+"""
+
+
+def build_chat_choice_smoke() -> dict:
+    """O turno da confirmação, sozinho — sem documento na conversa."""
+    smoke = build_chat_smoke()
+    for original in smoke["nodes"]:
+        if original["name"] == "Mensagem no Telegram":
+            original["parameters"]["jsCode"] = CHAT_CHOICE_MESSAGES
+    # Sem PDF: este turno não tem anexo, e ler o disco aqui seria mentira.
+    smoke["nodes"] = [n for n in smoke["nodes"] if n["name"] != "Ler edital do disco"]
+    smoke["connections"]["Disparo manual"] = {
+        "main": [[{"node": "Mensagem no Telegram", "type": "main", "index": 0}]]}
+    smoke["connections"].pop("Ler edital do disco", None)
+    smoke["id"] = CHAT_CHOICE_SMOKE_ID
+    smoke["name"] = "95 - Smoke da escolha de lote"
+    return smoke
+
+
 def build_chat_smoke() -> dict:
     """Exercita o chat sem o Telegram na frente nem atras.
 
@@ -2229,3 +2265,4 @@ if __name__ == "__main__":
     write(PREPARE_OUTPUT, build_prepare())
     write(CHAT_OUTPUT, build_chat())
     write(CHAT_SMOKE_OUTPUT, build_chat_smoke())
+    write(CHAT_CHOICE_SMOKE_OUTPUT, build_chat_choice_smoke())

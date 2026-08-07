@@ -214,7 +214,8 @@ não há `LLM_QA_STRUCTURED`.
 ```bash
 run() { docker compose exec -e N8N_RUNNERS_BROKER_PORT=5699 n8n n8n execute --id="$1"; }
 
-run chatsmoke00000001   # chat: roteamento, escopo, Q&A
+run chatsmoke00000001   # chat: roteamento, escopo, Q&A, e envia o PDF
+run chatchoicesmoke01   # o turno da confirmação, sozinho (rode o 96 antes)
 run ingestsmoke00001    # edital → ficha (gasta token do provedor de extração)
 run lookupsmoke00001    # DataJud
 run gatewaysmoke00001   # gateway isolado
@@ -222,6 +223,12 @@ run gatewaysmoke00001   # gateway isolado
 
 `N8N_RUNNERS_BROKER_PORT=5699` evita conflito de porta com a instância que já
 está rodando.
+
+O smoke 95 existe porque o 96 manda todas as mensagens numa execução só, e
+nela o item de documento existe mesmo quando se testa a escolha. Isso escondeu
+um defeito que chegou ao usuário: a resposta da ficha buscava o nome do arquivo
+filtrando `route === 'document'`, e no turno da confirmação esse item não
+existe. Um teste que junta dois turnos numa execução não testa dois turnos.
 
 ## Publicar um fluxo alterado
 

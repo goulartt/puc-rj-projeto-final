@@ -1,6 +1,6 @@
 {
-  "id": "chatsmoke00000001",
-  "name": "96 - Smoke do chat",
+  "id": "chatchoicesmoke01",
+  "name": "95 - Smoke da escolha de lote",
   "nodes": [
     {
       "parameters": {},
@@ -15,23 +15,7 @@
     },
     {
       "parameters": {
-        "fileSelector": "/data/editais/edital-exemplo.pdf",
-        "options": {
-          "dataPropertyName": "data"
-        }
-      },
-      "id": "ler-edital-do-disco",
-      "name": "Ler edital do disco",
-      "type": "n8n-nodes-base.readWriteFile",
-      "typeVersion": 1,
-      "position": [
-        -400,
-        0
-      ]
-    },
-    {
-      "parameters": {
-        "jsCode": "\n// Mensagens sinteticas no formato que o Telegram entrega, uma por caminho do\n// roteador. O chat_id e o mesmo que a ingestao usou no smoke test, entao o\n// caminho de pergunta encontra a ficha real do edital de exemplo.\n//\n// A primeira leva o PDF de verdade. Sem ela o ramo de documento — o mais caro\n// e o que ja quebrou duas vezes, primeiro perdendo o binario e depois falhando\n// no envio — ficava fora do teste.\nconst chat = { id: 'smoke-test' };\nconst pdf = $('Ler edital do disco').first();\nreturn [\n  { json: { message: { chat, document: {\n      file_name: 'edital-exemplo.pdf', mime_type: 'application/pdf' } } },\n    binary: pdf.binary },\n  { json: { message: { chat, text: 'Esse imovel esta ocupado?' } } },\n  { json: { message: { chat, text: 'Vale a pena comprar esse imovel?' } } },\n  { json: { message: { chat, text: 'O que e comissao do leiloeiro?' } } },\n  { json: { message: { chat, text: 'Posso processar o antigo dono?' } } },\n  { json: { message: { chat, text: '/ajuda' } } },\n  { json: { message: { chat, photo: [{ file_id: 'x' }] } } },\n  { json: { message: { chat, document: {\n      file_name: 'planilha.xlsx', mime_type: 'application/vnd.ms-excel' } } } },\n  // Escolha do imovel. Na primeira execucao nao ha edital pendente e isto e\n  // so uma mensagem qualquer; na segunda, com o pendente gravado pelo turno\n  // anterior, vira a confirmacao que dispara a extracao.\n  { json: { message: { chat, text: 'sim' } } },\n];\n"
+        "jsCode": "\n// Segundo turno isolado: so a resposta da pessoa, sem o PDF na conversa.\n//\n// O smoke do chat manda todas as mensagens numa execucao so, e por isso o item\n// de documento existe mesmo quando se testa a escolha. Isso escondeu um\n// defeito que chegou ao usuario: `Resposta da ficha` buscava o nome do arquivo\n// filtrando `route === 'document'`, e em producao esse item nao existe no\n// turno da confirmacao. Aqui ele nao existe tambem.\n//\n// Exige um edital pendente no banco — rode o 96 antes.\nreturn [{ json: { message: { chat: { id: 'smoke-test' }, text: 'sim' } } }];\n"
       },
       "id": "mensagem-no-telegram",
       "name": "Mensagem no Telegram",
@@ -1334,17 +1318,6 @@
       ]
     },
     "Disparo manual": {
-      "main": [
-        [
-          {
-            "node": "Ler edital do disco",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Ler edital do disco": {
       "main": [
         [
           {
