@@ -588,6 +588,34 @@ return [{ json: {
 } }];
 """
 
+INGEST_CASE_REQUEST = """
+// Monta a consulta processual a partir do bloco deterministico.
+//
+// O numero vem do extrator, e nao da ficha do modelo, por dois motivos: ele ja
+// validou o digito verificador, e ja distinguiu o processo do leilao dos
+// precedentes citados no juridiques. Consultar um precedente injetaria na
+// ficha a situacao de uma causa alheia ao imovel.
+let result;
+try {
+  result = $('Conferir correcao').first().json;
+} catch (e) {
+  result = $('Conferir resultado').first().json;
+}
+
+const main = (result.deterministic || {}).court_case || null;
+const number = main && main.valid ? main.number : null;
+const alias = main ? main.datajud_alias : null;
+
+// Leilao extrajudicial nao tem processo, e tribunal fora da cobertura do
+// DataJud nao tem alias. Nos dois casos o certo e nao consultar, e nao e uma
+// falha — a ficha segue sem situacao processual.
+return [{ json: {
+  should_lookup: Boolean(number && alias),
+  cnj_number: number,
+  datajud_alias: alias,
+} }];
+"""
+
 INGEST_REPAIR_PROMPT = """
 // Pede a correção dos erros de validação, em vez de jogar a ficha fora.
 //
@@ -808,8 +836,46 @@ def build_ingest() -> dict:
                 "={{ [$json.chat_id, $json.file_name, $json.sha256, $json.markdown,"
                 " JSON.stringify($json.deterministic), JSON.stringify($json.analysis)] }}"},
         }, credentials={"postgres": {"id": "leilao-postgres", "name": "Postgres do projeto"}}),
-        node("Resposta de sucesso", "n8n-nodes-base.code", 2, [2040, -110], {"jsCode": """
-const saved = $input.first().json;
+        node("Preparar consulta processual", "n8n-nodes-base.code", 2, [2040, -110],
+             {"jsCode": INGEST_CASE_REQUEST}),
+        node("Tem processo judicial?", "n8n-nodes-base.if", 2.2, [2240, -110], {
+            "conditions": {
+                "options": {"caseSensitive": True, "typeValidation": "strict", "version": 2},
+                "conditions": [{"id": "lookup",
+                                "operator": {"type": "boolean", "operation": "true",
+                                             "singleValue": True},
+                                "leftValue": "={{ $json.should_lookup }}"}],
+                "combinator": "and"}}),
+        # DataJud indisponivel nao pode derrubar a ingestao: a ficha ja esta
+        # gravada e vale sem a situacao processual. Sem isto, uma falha na API
+        # do CNJ faria a pessoa perder o edital inteiro.
+        node("Consultar processo", "n8n-nodes-base.executeWorkflow", 1.3, [2440, -210], {
+            "workflowId": {"__rl": True, "value": LOOKUP_ID, "mode": "id"},
+            "options": {"waitForSubWorkflow": True},
+        }, onError="continueRegularOutput"),
+        # Cache da consulta. O chat le desta tabela para dizer se o processo
+        # registra algo que ameace a arrematacao; sem esta gravacao ela fica
+        # vazia e o destaque nunca aparece — que era exatamente o estado
+        # anterior a esta mudanca.
+        node("Registrar consulta", "n8n-nodes-base.postgres", 2.7, [2640, -210], {
+            "operation": "executeQuery",
+            "query": ("INSERT INTO case_lookups "
+                      "(cnj_number, court_alias, status, movements, summary, fetched_at) "
+                      "VALUES ($1, $2, $3, $4, $5, now()) "
+                      "ON CONFLICT (cnj_number) DO UPDATE SET "
+                      "court_alias = EXCLUDED.court_alias, status = EXCLUDED.status, "
+                      "movements = EXCLUDED.movements, summary = EXCLUDED.summary, "
+                      "fetched_at = now();"),
+            "options": {"queryReplacement":
+                        "={{ [$json.cnj_number, $json.court_alias, $json.status,"
+                        " JSON.stringify($json.analysis), JSON.stringify($json.summary)] }}"},
+        }, credentials={"postgres": {"id": "leilao-postgres", "name": "Postgres do projeto"}},
+           alwaysOutputData=True, onError="continueRegularOutput"),
+        node("Resposta de sucesso", "n8n-nodes-base.code", 2, [2860, -110], {"jsCode": """
+// A ficha ja foi gravada; o id vem do no que a gravou, e nao de `$input`, que
+// aqui pode chegar de tres lugares diferentes conforme houve correcao e houve
+// consulta processual.
+const saved = $('Persistir ficha').first().json;
 
 // `Persistir ficha` recebe de dois caminhos: a extracao que passou de primeira
 // e a que passou depois de corrigida. Referenciar o no errado devolveria a
@@ -826,6 +892,11 @@ try {
 return [{ json: {
   ok: true,
   notice_id: saved.id,
+  // Consulta processual: `null` quando o leilao e extrajudicial ou o tribunal
+  // esta fora da cobertura do DataJud.
+  court_case_status: (() => {
+    try { return $('Consultar processo').first().json.status; } catch (e) { return null; }
+  })(),
   chat_id: result.chat_id,
   analysis: result.analysis,
   usage: result.usage,
@@ -898,7 +969,18 @@ return [{ json: { ok: false, problems: r.problems, chat_id: r.chat_id, file_name
             [{"node": "Persistir ficha", "type": "main", "index": 0}],
             [{"node": "Resposta de falha", "type": "main", "index": 0}],
         ]},
-        "Persistir ficha": {"main": [[{"node": "Resposta de sucesso", "type": "main", "index": 0}]]},
+        "Persistir ficha": {"main": [[
+            {"node": "Preparar consulta processual", "type": "main", "index": 0}]]},
+        "Preparar consulta processual": {"main": [[
+            {"node": "Tem processo judicial?", "type": "main", "index": 0}]]},
+        # Os dois ramos terminam na mesma resposta: nao ter processo nao e
+        # falha, e a ficha vale igual.
+        "Tem processo judicial?": {"main": [
+            [{"node": "Consultar processo", "type": "main", "index": 0}],
+            [{"node": "Resposta de sucesso", "type": "main", "index": 0}],
+        ]},
+        "Consultar processo": {"main": [[{"node": "Registrar consulta", "type": "main", "index": 0}]]},
+        "Registrar consulta": {"main": [[{"node": "Resposta de sucesso", "type": "main", "index": 0}]]},
     }
 
     return {
@@ -1540,7 +1622,8 @@ def build_chat() -> dict:
         # sem base.
         node("Buscar situacao do processo", "n8n-nodes-base.postgres", 2.7, [880, -320], {
             "operation": "executeQuery",
-            "query": "SELECT summary FROM case_lookups WHERE cnj_number = $1 LIMIT 1;",
+            "query": ("SELECT movements AS case_analysis FROM case_lookups "
+                      "WHERE cnj_number = $1 LIMIT 1;"),
             "options": {"queryReplacement":
                         "={{ [ (($json.analysis || {}).court_case || {}).number || '' ] }}"},
         }, credentials=POSTGRES_CRED, alwaysOutputData=True),
@@ -1549,7 +1632,7 @@ def build_chat() -> dict:
             "sendBody": True, "specifyBody": "json",
             "jsonBody": ("={{ JSON.stringify({ "
                          "ficha: ($('Chamar ingestao').first().json.analysis || {}), "
-                         "case: ($json.summary || null) }) }}"),
+                         "case: ($json.case_analysis || null) }) }}"),
             "options": {"timeout": 30000}}),
         node("Resposta da ficha", "n8n-nodes-base.code", 2, [1280, -320],
              {"jsCode": CHAT_INGEST_REPLY}),

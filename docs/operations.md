@@ -63,6 +63,11 @@ psql -c "SELECT role, chat_id, model, input_tokens, output_tokens, cost_usd, err
 psql -c "SELECT * FROM budget_spent;"      # total gasto contra BUDGET_USD_LIMIT
 psql -c "SELECT * FROM usage_by_chat;"     # uso e custo por conversa
 psql -c "SELECT * FROM llm_call_health;"   # taxa de erro por modelo
+
+# situação processual consultada durante a ingestão
+psql -c "SELECT cnj_number, status, movements->>'movement_count' AS movimentos,
+                jsonb_array_length(movements->'active_signals') AS sinais_ativos, fetched_at
+           FROM case_lookups ORDER BY fetched_at DESC;"
 ```
 
 `llm_calls` registra **também as chamadas que falharam**, com a causa na coluna

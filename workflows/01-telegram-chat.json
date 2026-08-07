@@ -273,7 +273,7 @@
     {
       "parameters": {
         "operation": "executeQuery",
-        "query": "SELECT summary FROM case_lookups WHERE cnj_number = $1 LIMIT 1;",
+        "query": "SELECT movements AS case_analysis FROM case_lookups WHERE cnj_number = $1 LIMIT 1;",
         "options": {
           "queryReplacement": "={{ [ (($json.analysis || {}).court_case || {}).number || '' ] }}"
         }
@@ -300,7 +300,7 @@
         "url": "={{ $env.DOCLING_URL }}/present",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ ficha: ($('Chamar ingestao').first().json.analysis || {}), case: ($json.summary || null) }) }}",
+        "jsonBody": "={{ JSON.stringify({ ficha: ($('Chamar ingestao').first().json.analysis || {}), case: ($json.case_analysis || null) }) }}",
         "options": {
           "timeout": 30000
         }

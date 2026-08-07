@@ -74,8 +74,10 @@ rastreabilidade. A separação abaixo é o que torna o produto viável:
 │       determinístico como âncora, devolvendo ficha com citação  │
 └─────────────────────────────────────────────────────────────────┘
               ↓ ficha validada contra JSON Schema (~3k tokens)
-┌─ ESTÁGIO 2 — se houver processo judicial ───────────────────────┐
+┌─ ESTÁGIO 2 — se houver CNJ válido, disparado pela ingestão ─────┐
 │  DataJud (API pública do CNJ) → movimentos → sinais de risco    │
+│  gravado em case_lookups; leilão extrajudicial simplesmente     │
+│  não consulta, e isso não é falha                               │
 └─────────────────────────────────────────────────────────────────┘
               ↓
 ┌─ ESTÁGIO 3 — N vezes por edital ────────────────────────────────┐

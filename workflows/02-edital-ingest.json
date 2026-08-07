@@ -257,14 +257,104 @@
     },
     {
       "parameters": {
-        "jsCode": "\nconst saved = $input.first().json;\n\n// `Persistir ficha` recebe de dois caminhos: a extracao que passou de primeira\n// e a que passou depois de corrigida. Referenciar o no errado devolveria a\n// ficha reprovada. O try existe porque `$()` num no que nao executou lanca.\nlet result;\nlet repaired = false;\ntry {\n  result = $('Conferir correcao').first().json;\n  repaired = true;\n} catch (e) {\n  result = $('Conferir resultado').first().json;\n}\n\nreturn [{ json: {\n  ok: true,\n  notice_id: saved.id,\n  chat_id: result.chat_id,\n  analysis: result.analysis,\n  usage: result.usage,\n  // Quando houve correcao, o custo ja soma as duas chamadas.\n  cost_usd: result.cost_usd,\n  repaired,\n} }];\n"
+        "jsCode": "\n// Monta a consulta processual a partir do bloco deterministico.\n//\n// O numero vem do extrator, e nao da ficha do modelo, por dois motivos: ele ja\n// validou o digito verificador, e ja distinguiu o processo do leilao dos\n// precedentes citados no juridiques. Consultar um precedente injetaria na\n// ficha a situacao de uma causa alheia ao imovel.\nlet result;\ntry {\n  result = $('Conferir correcao').first().json;\n} catch (e) {\n  result = $('Conferir resultado').first().json;\n}\n\nconst main = (result.deterministic || {}).court_case || null;\nconst number = main && main.valid ? main.number : null;\nconst alias = main ? main.datajud_alias : null;\n\n// Leilao extrajudicial nao tem processo, e tribunal fora da cobertura do\n// DataJud nao tem alias. Nos dois casos o certo e nao consultar, e nao e uma\n// falha — a ficha segue sem situacao processual.\nreturn [{ json: {\n  should_lookup: Boolean(number && alias),\n  cnj_number: number,\n  datajud_alias: alias,\n} }];\n"
+      },
+      "id": "preparar-consulta-processual",
+      "name": "Preparar consulta processual",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2040,
+        -110
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "lookup",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.should_lookup }}"
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "tem-processo-judicial?",
+      "name": "Tem processo judicial?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2240,
+        -110
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "processolookup01",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "consultar-processo",
+      "name": "Consultar processo",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        2440,
+        -210
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO case_lookups (cnj_number, court_alias, status, movements, summary, fetched_at) VALUES ($1, $2, $3, $4, $5, now()) ON CONFLICT (cnj_number) DO UPDATE SET court_alias = EXCLUDED.court_alias, status = EXCLUDED.status, movements = EXCLUDED.movements, summary = EXCLUDED.summary, fetched_at = now();",
+        "options": {
+          "queryReplacement": "={{ [$json.cnj_number, $json.court_alias, $json.status, JSON.stringify($json.analysis), JSON.stringify($json.summary)] }}"
+        }
+      },
+      "id": "registrar-consulta",
+      "name": "Registrar consulta",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        2640,
+        -210
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "leilao-postgres",
+          "name": "Postgres do projeto"
+        }
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// A ficha ja foi gravada; o id vem do no que a gravou, e nao de `$input`, que\n// aqui pode chegar de tres lugares diferentes conforme houve correcao e houve\n// consulta processual.\nconst saved = $('Persistir ficha').first().json;\n\n// `Persistir ficha` recebe de dois caminhos: a extracao que passou de primeira\n// e a que passou depois de corrigida. Referenciar o no errado devolveria a\n// ficha reprovada. O try existe porque `$()` num no que nao executou lanca.\nlet result;\nlet repaired = false;\ntry {\n  result = $('Conferir correcao').first().json;\n  repaired = true;\n} catch (e) {\n  result = $('Conferir resultado').first().json;\n}\n\nreturn [{ json: {\n  ok: true,\n  notice_id: saved.id,\n  // Consulta processual: `null` quando o leilao e extrajudicial ou o tribunal\n  // esta fora da cobertura do DataJud.\n  court_case_status: (() => {\n    try { return $('Consultar processo').first().json.status; } catch (e) { return null; }\n  })(),\n  chat_id: result.chat_id,\n  analysis: result.analysis,\n  usage: result.usage,\n  // Quando houve correcao, o custo ja soma as duas chamadas.\n  cost_usd: result.cost_usd,\n  repaired,\n} }];\n"
       },
       "id": "resposta-de-sucesso",
       "name": "Resposta de sucesso",
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        2040,
+        2860,
         -110
       ]
     },
@@ -576,6 +666,57 @@
       ]
     },
     "Persistir ficha": {
+      "main": [
+        [
+          {
+            "node": "Preparar consulta processual",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar consulta processual": {
+      "main": [
+        [
+          {
+            "node": "Tem processo judicial?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Tem processo judicial?": {
+      "main": [
+        [
+          {
+            "node": "Consultar processo",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Resposta de sucesso",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Consultar processo": {
+      "main": [
+        [
+          {
+            "node": "Registrar consulta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Registrar consulta": {
       "main": [
         [
           {
