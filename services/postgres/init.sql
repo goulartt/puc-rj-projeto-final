@@ -18,6 +18,25 @@ CREATE TABLE IF NOT EXISTS auction_notices (
 CREATE INDEX IF NOT EXISTS auction_notices_recent ON auction_notices (chat_id, created_at DESC);
 
 -- ─── Consultas processuais (Estágio 2) ──────────────────────────────────────
+-- Edital convertido e à espera de a pessoa dizer qual imóvel quer analisar.
+--
+-- Existe porque a confirmação parte a ingestão em duas mensagens do Telegram, e
+-- cada execução do n8n é independente: sem isto, o Markdown já convertido se
+-- perderia entre a pergunta e a resposta, e a pessoa teria de reenviar o PDF.
+--
+-- Guarda o Markdown, e não o PDF: a conversão já foi paga e não se repete.
+-- Uma pendência por conversa — mandar um segundo edital antes de responder
+-- substitui o primeiro, que é o que a pessoa espera ao trocar de documento.
+CREATE TABLE IF NOT EXISTS pending_notices (
+    chat_id       TEXT        PRIMARY KEY,
+    file_name     TEXT        NOT NULL,
+    sha256        TEXT        NOT NULL,
+    markdown      TEXT        NOT NULL,
+    deterministic JSONB       NOT NULL,
+    lots          JSONB       NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS case_lookups (
     cnj_number  TEXT        PRIMARY KEY,  -- formato NNNNNNN-DD.AAAA.J.TR.OOOO
     court_alias TEXT        NOT NULL,     -- índice DataJud, ex.: api_publica_tjrj

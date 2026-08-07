@@ -448,7 +448,26 @@ def build_ingest_smoke() -> dict:
 return [{ json: { chat_id: 'smoke-test', file_name: 'edital-exemplo.pdf' },
           binary: $input.first().binary }];
 """}),
-        node("Chamar ingestao", "n8n-nodes-base.executeWorkflow", 1.3, [600, 0], {
+        # As duas fases, na ordem em que a conversa as executa. O smoke pula a
+        # pergunta de lote de proposito: ele mede a extracao, e o edital de
+        # exemplo tem um imovel so.
+        node("Chamar preparacao", "n8n-nodes-base.executeWorkflow", 1.3, [600, 0], {
+            "workflowId": {"__rl": True, "value": PREPARE_ID, "mode": "id"},
+            "options": {"waitForSubWorkflow": True},
+        }),
+        node("Escolher o unico lote", "n8n-nodes-base.code", 2, [800, 0], {"jsCode": """
+const prepared = $input.first().json;
+const lots = prepared.lots || [];
+return [{ json: {
+  chat_id: prepared.chat_id,
+  file_name: prepared.file_name,
+  sha256: prepared.sha256,
+  markdown: prepared.markdown,
+  deterministic: prepared.deterministic,
+  lot: lots.length > 1 ? lots[0] : null,
+} }];
+"""}),
+        node("Chamar ingestao", "n8n-nodes-base.executeWorkflow", 1.3, [1000, 0], {
             "workflowId": {"__rl": True, "value": INGEST_ID, "mode": "id"},
             "options": {"waitForSubWorkflow": True},
         }),
@@ -456,7 +475,9 @@ return [{ json: { chat_id: 'smoke-test', file_name: 'edital-exemplo.pdf' },
     connections = {
         "Disparo manual": {"main": [[{"node": "Ler edital do disco", "type": "main", "index": 0}]]},
         "Ler edital do disco": {"main": [[{"node": "Identificar o chat", "type": "main", "index": 0}]]},
-        "Identificar o chat": {"main": [[{"node": "Chamar ingestao", "type": "main", "index": 0}]]},
+        "Identificar o chat": {"main": [[{"node": "Chamar preparacao", "type": "main", "index": 0}]]},
+        "Chamar preparacao": {"main": [[{"node": "Escolher o unico lote", "type": "main", "index": 0}]]},
+        "Escolher o unico lote": {"main": [[{"node": "Chamar ingestao", "type": "main", "index": 0}]]},
     }
     return {
         "id": "ingestsmoke00001",
@@ -501,10 +522,13 @@ INGEST_PREPARE_PROMPT = """
 // Monta a chamada de extração. O prompt e o schema vêm de arquivos montados no
 // container, e não embutidos aqui: assim continuam revisáveis em diff e o
 // mesmo texto que o repositório versiona é o que o modelo recebe.
+// A conversao e a extracao deterministica acontecem em `04-edital-preparar`,
+// antes da pergunta sobre qual imovel analisar. Aqui o documento ja chega em
+// texto: a conversao foi paga uma vez e nao se repete se a pessoa demorar a
+// responder.
 const trigger = $('Chamada de outro fluxo').first().json;
-const converted = $('Converter PDF').first().json;
-const markdown = converted.markdown || '';
-const deterministic = $('Extrair campos deterministicos').first().json;
+const markdown = trigger.markdown || '';
+const deterministic = trigger.deterministic || {};
 const systemPrompt = $('Buscar prompt de analista').first().json.text;
 const schema = $('Buscar schema da ficha').first().json.schema;
 
@@ -579,14 +603,27 @@ return [{ json: {
   // e conteudo vazio.
   maxTokens: Number($env.LLM_EXTRACTION_MAX_TOKENS || 16000),
   expectJson: true,
-  messages: [{ role: 'user', content:
-    'EXTRACAO DETERMINISTICA (confira contra o texto):\\n' + hint +
-    '\\n\\nEDITAL:\\n' + markdown }],
+  messages: [{ role: 'user', content: [
+    // Quando o edital cobre varios imoveis, o documento inteiro vai junto — a
+    // parte comum (datas, regras, comissao) vale para todos os lotes e fatiar
+    // o texto deixaria a ficha sem prazos. O que muda e a instrucao.
+    trigger.lot
+      ? 'ESTE EDITAL COBRE VARIOS IMOVEIS. Descreva SOMENTE o imovel de ' +
+        'matricula ' + trigger.lot.registry + '. Ignore os demais; as regras ' +
+        'de leilao, prazos e pagamento valem para todos e devem ser extraidas.'
+      : '',
+    'EXTRACAO DETERMINISTICA (confira contra o texto):',
+    hint,
+    '',
+    'EDITAL:',
+    markdown,
+  ].filter(Boolean).join(String.fromCharCode(10)) }],
   // Carregado adiante, na persistência.
   _chat_id: trigger.chat_id,
   _file_name: trigger.file_name,
   _markdown: markdown,
-  _sha256: converted.sha256,
+  _sha256: trigger.sha256,
+  _lot: trigger.lot || null,
   _deterministic: deterministic,
 } }];
 """
@@ -754,34 +791,6 @@ def build_ingest() -> dict:
     nodes = [
         node("Chamada de outro fluxo", "n8n-nodes-base.executeWorkflowTrigger", 1.2,
              [0, 0], {"inputSource": "passthrough"}),
-        node("Converter PDF", "n8n-nodes-base.httpRequest", 4.5, [200, 0], {
-            "method": "POST",
-            "url": "={{ $env.DOCLING_URL }}/convert",
-            "sendBody": True,
-            "contentType": "multipart-form-data",
-            "bodyParameters": {"parameters": [
-                {"parameterType": "formBinaryData", "name": "file", "inputDataFieldName": "data"},
-            ]},
-            "options": {"timeout": 900000},
-        }),
-        node("Aviso de progresso", "n8n-nodes-base.code", 2, [420, -300],
-             {"jsCode": INGEST_PROGRESS}),
-        node("Responder progresso", "n8n-nodes-base.telegram", 1.2, [620, -300], {
-            "chatId": "={{ $json.chat_id }}",
-            "text": "={{ $json.text }}",
-            "additionalFields": {"parse_mode": "HTML", "appendAttribution": False},
-        }, credentials={"telegramApi": {"id": "leilao-telegram", "name": "Bot do Telegram"}}),
-        node("Extrair campos deterministicos", "n8n-nodes-base.httpRequest", 4.5, [400, 0], {
-            "method": "POST",
-            "url": "={{ $env.DOCLING_URL }}/extract",
-            "sendBody": True,
-            "specifyBody": "json",
-            "jsonBody": "={{ JSON.stringify({ markdown: $json.markdown }) }}",
-            "options": {"timeout": 60000},
-        }),
-        # Prompt e schema vêm por HTTP do serviço de documentos, e não de nós
-        # de leitura de arquivo: aquele nó entrega binário e exigiria um nó de
-        # conversão para cada um. Assim continuam sendo arquivos do repositório.
         node("Buscar prompt de analista", "n8n-nodes-base.httpRequest", 4.5, [600, -110], {
             "url": "={{ $env.DOCLING_URL }}/prompt/analyst-extraction",
             "options": {"timeout": 30000},
@@ -938,16 +947,8 @@ return [{ json: { ok: false, problems: r.problems, chat_id: r.chat_id, file_name
     ]
 
     connections = {
-        "Chamada de outro fluxo": {"main": [[{"node": "Converter PDF", "type": "main", "index": 0}]]},
-        # O aviso sai primeiro; a extracao segue no mesmo item, intacto. Em
-        # serie nao daria: o no do Telegram substitui o item pela resposta da
-        # API e o Markdown do edital se perderia.
-        "Converter PDF": {"main": [[
-            {"node": "Aviso de progresso", "type": "main", "index": 0},
-            {"node": "Extrair campos deterministicos", "type": "main", "index": 0},
-        ]]},
-        "Aviso de progresso": {"main": [[{"node": "Responder progresso", "type": "main", "index": 0}]]},
-        "Extrair campos deterministicos": {"main": [[{"node": "Buscar prompt de analista", "type": "main", "index": 0}]]},
+        "Chamada de outro fluxo": {"main": [[
+            {"node": "Buscar prompt de analista", "type": "main", "index": 0}]]},
         "Buscar prompt de analista": {"main": [[{"node": "Buscar schema da ficha", "type": "main", "index": 0}]]},
         "Buscar schema da ficha": {"main": [[{"node": "Preparar extracao", "type": "main", "index": 0}]]},
         "Preparar extracao": {"main": [[{"node": "Extrair ficha", "type": "main", "index": 0}]]},
@@ -1346,6 +1347,106 @@ return $input.all().map((entry) => ({
 }));
 """
 
+CHAT_RESOLVE_PENDING = r"""
+// Reconhece a resposta a "qual imovel?" como rota propria.
+//
+// O roteador anterior nao tem como saber disso: ele so ve o texto, e "2" e uma
+// mensagem valida em qualquer contexto. E a existencia de um edital pendente
+// nesta conversa que transforma a mensagem numa escolha.
+const pending = $input.all().map((i) => i.json).filter((r) => r && r.lots);
+const waiting = pending.length ? pending[0] : null;
+
+// Com um edital pendente, nem toda mensagem e escolha de lote. Sem esta
+// distincao, "Esse imovel esta ocupado?" viraria uma escolha invalida e a
+// pessoa receberia "nao entendi qual imovel" no lugar da resposta.
+//
+// Pergunta se reconhece por forma, nao por conteudo: termina em interrogacao
+// ou comeca com palavra interrogativa. O resto — "2", "sim", "a 81.909" — e
+// escolha, que e o que se espera logo depois da pergunta.
+const QUESTION = /\?\s*$|^\s*(qual|quais|quanto|quantos|quando|como|onde|quem|por que|porque|o que|oq|existe|tem |ha )/i;
+
+return $('Aplicar escopo').all().map((entry) => {
+  if (!waiting) return entry;
+  if (entry.json.route !== 'question' && entry.json.route !== 'out_of_scope') {
+    return entry;
+  }
+  if (QUESTION.test(entry.json.text || '')) return entry;
+  return { json: { ...entry.json, route: 'lot_choice', pending: waiting },
+           binary: entry.binary };
+});
+"""
+
+CHAT_ASK_LOT = CHAT_FORMAT_HELPERS + """
+// A pergunta que evita analisar o imovel errado.
+//
+// Confirmar tambem quando ha um imovel so e decisao de produto: alem de
+// validar que e o bem certo, protege do caso em que a deteccao erra e existe
+// um segundo lote que nao foi visto.
+// Duas origens: a preparacao tem o edital e os lotes; o servico tem as
+// descricoes prontas. Ler tudo de `$input` pegaria so a segunda, que nao traz
+// chat_id nem nome de arquivo — foi o que fez a primeira versao dizer "nao
+// consegui identificar a matricula" para um edital que tinha uma.
+const prepared = $('Chamar preparacao').first().json;
+const described = $input.first().json;
+const options = described.options || [];
+const lots = prepared.lots || [];
+const NL = String.fromCharCode(10);
+const linhas = [];
+
+if (lots.length > 1) {
+  linhas.push(bold('Este edital cobre ' + lots.length + ' imoveis.') +
+              ' Qual deles voce quer analisar?', '');
+  options.forEach((o, i) => linhas.push((i + 1) + '. ' + esc(o)));
+  linhas.push('', 'Responda com o numero ou com a matricula.');
+} else if (lots.length === 1) {
+  linhas.push(bold('Encontrei este imovel no edital:'), '',
+              esc(options[0] || 'imovel'), '',
+              'E esse que voce quer analisar? Responda ' + bold('sim') +
+              ' para eu montar a ficha.');
+} else {
+  // Sem matricula legivel nao da para listar, mas da para seguir: a extracao
+  // funciona igual, so nao ha o que confirmar.
+  linhas.push(bold('Recebi o edital') + ' — ' + esc(prepared.file_name || 'documento') +
+              '.', '', 'Nao consegui identificar a matricula do imovel no texto. ' +
+              'Responda ' + bold('sim') + ' para eu analisar o documento assim mesmo.');
+}
+
+return [{ json: { chat_id: prepared.chat_id, text: linhas.join(NL) } }];
+"""
+
+CHAT_LOT_DECISION = CHAT_FORMAT_HELPERS + """
+// Traduz a leitura da escolha em "extrai" ou "pergunta de novo".
+const verdict = $input.first().json;
+const routed = $('Resolver pendente').all()
+  .filter((i) => i.json.route === 'lot_choice')[0].json;
+const pending = routed.pending;
+const NL = String.fromCharCode(10);
+
+if (!verdict.understood) {
+  const opcoes = (verdict.options || [])
+    .map((o, i) => (i + 1) + '. ' + esc(o)).join(NL);
+  const pedido = (pending.lots || []).length > 1
+    ? 'Nao entendi qual imovel voce quer.' + NL + NL + opcoes + NL + NL +
+      'Responda com o numero ou com a matricula.'
+    : 'Responda ' + bold('sim') + ' para eu analisar este imovel.';
+  return [{ json: { proceed: false, chat_id: routed.chat_id, text: pedido } }];
+}
+
+// Segue para a extracao com tudo que a preparacao ja produziu: o Markdown nao
+// e reconvertido e a pessoa nao reenvia o PDF.
+return [{ json: {
+  proceed: true,
+  chat_id: routed.chat_id,
+  file_name: pending.file_name,
+  sha256: pending.sha256,
+  markdown: pending.markdown,
+  deterministic: pending.deterministic,
+  // `lot` so quando ha o que desambiguar: com um imovel so, instruir o modelo a
+  // ignorar os demais seria instrucao sobre algo que nao existe.
+  lot: (pending.lots || []).length > 1 ? verdict.lot : null,
+} }];
+"""
+
 CHAT_QUESTION_ACK = CHAT_FORMAT_HELPERS + """
 // Aviso imediato de que a pergunta chegou.
 //
@@ -1627,6 +1728,17 @@ def build_chat() -> dict:
             "options": {"timeout": 15000}}),
         node("Aplicar escopo", "n8n-nodes-base.code", 2, [700, 0],
              {"jsCode": CHAT_SCOPE_APPLY}),
+        # Um edital pendente nesta conversa muda o sentido da proxima mensagem:
+        # "2" deixa de ser pergunta e vira escolha de lote.
+        node("Buscar pendente", "n8n-nodes-base.postgres", 2.7, [700, 0], {
+            "operation": "executeQuery",
+            "query": ("DELETE FROM pending_notices WHERE created_at < now() - interval '6 hours'; "
+                      "SELECT file_name, sha256, markdown, deterministic, lots "
+                      "FROM pending_notices WHERE chat_id = $1;"),
+            "options": {"queryReplacement": "={{ [$json.chat_id] }}"},
+        }, credentials=POSTGRES_CRED, alwaysOutputData=True),
+        node("Resolver pendente", "n8n-nodes-base.code", 2, [780, 0],
+             {"jsCode": CHAT_RESOLVE_PENDING}),
         node("Caminho", "n8n-nodes-base.switch", 3.2, [860, 0], {
             "rules": {"values": [
                 {"conditions": {
@@ -1637,16 +1749,55 @@ def build_chat() -> dict:
                     "combinator": "and"},
                  "outputKey": route}
                 for route in ("document", "question", "help", "forget",
-                              "unsupported_file", "out_of_scope")
+                              "unsupported_file", "out_of_scope", "lot_choice")
             ]},
             "options": {"fallbackOutput": "none"},
         }),
 
         # ── documento ──
-        node("Chamar ingestao", "n8n-nodes-base.executeWorkflow", 1.3, [660, -320], {
+        node("Chamar preparacao", "n8n-nodes-base.executeWorkflow", 1.3, [660, -320], {
+            "workflowId": {"__rl": True, "value": PREPARE_ID, "mode": "id"},
+            "options": {"waitForSubWorkflow": True},
+        }),
+        node("Descrever lotes", "n8n-nodes-base.httpRequest", 4.2, [760, -320], {
+            "method": "POST", "url": "={{ $env.DOCLING_URL }}/lot-choice",
+            "sendBody": True, "specifyBody": "json",
+            "jsonBody": ("={{ JSON.stringify({ text: '', lots: $json.lots }) }}"),
+            "options": {"timeout": 30000}}),
+        node("Perguntar qual imovel", "n8n-nodes-base.code", 2, [820, -320],
+             {"jsCode": CHAT_ASK_LOT}),
+        _telegram_send("Responder pergunta de lote", [900, -320]),
+
+        # Escolha do imovel: le a resposta e, se entendeu, extrai.
+        node("Ler escolha", "n8n-nodes-base.httpRequest", 4.2, [660, 700], {
+            "method": "POST", "url": "={{ $env.DOCLING_URL }}/lot-choice",
+            "sendBody": True, "specifyBody": "json",
+            "jsonBody": ("={{ JSON.stringify({ text: $json.text,"
+                         " lots: $json.pending.lots }) }}"),
+            "options": {"timeout": 30000}}),
+        node("Decidir escolha", "n8n-nodes-base.code", 2, [760, 700],
+             {"jsCode": CHAT_LOT_DECISION}),
+        node("Entendeu a escolha?", "n8n-nodes-base.if", 2.2, [860, 700], {
+            "conditions": {
+                "options": {"caseSensitive": True, "typeValidation": "strict",
+                            "version": 2},
+                "conditions": [{"id": "proceed",
+                                "operator": {"type": "boolean", "operation": "true",
+                                             "singleValue": True},
+                                "leftValue": "={{ $json.proceed }}"}],
+                "combinator": "and"}}),
+        _telegram_send("Repetir pergunta de lote", [960, 820]),
+        node("Chamar ingestao", "n8n-nodes-base.executeWorkflow", 1.3, [960, 700], {
             "workflowId": {"__rl": True, "value": INGEST_ID, "mode": "id"},
             "options": {"waitForSubWorkflow": True},
         }),
+        node("Limpar pendente", "n8n-nodes-base.postgres", 2.7, [1000, 700], {
+            "operation": "executeQuery",
+            "query": "DELETE FROM pending_notices WHERE chat_id = $1;",
+            "options": {"queryReplacement":
+                        "={{ [$('Decidir escolha').first().json.chat_id] }}"},
+        }, credentials=POSTGRES_CRED, alwaysOutputData=True,
+           onError="continueRegularOutput"),
         node("Aviso de processamento", "n8n-nodes-base.code", 2, [660, -480],
              {"jsCode": CHAT_ACK}),
 
@@ -1735,14 +1886,15 @@ def build_chat() -> dict:
 
     connections = {
         **chain("Mensagem no Telegram", "Rotear mensagem", "Classificar escopo",
-                "Consultar escopo", "Aplicar escopo", "Caminho"),
+                "Consultar escopo", "Aplicar escopo", "Buscar pendente",
+                "Resolver pendente", "Caminho"),
         "Caminho": {"main": [
             # Duas saidas para o mesmo ramo: o aviso vai primeiro e a ingestao
             # segue em paralelo. Em serie nao funcionaria — o no do Telegram
             # devolve a resposta da API no lugar do item, e o PDF se perderia
             # antes de chegar ao Docling.
             [{"node": "Aviso de processamento", "type": "main", "index": 0},
-             {"node": "Chamar ingestao", "type": "main", "index": 0}],
+             {"node": "Chamar preparacao", "type": "main", "index": 0}],
             # Aviso primeiro, consulta em paralelo. Em serie o no do Telegram
             # substituiria o item e a pergunta se perderia.
             [{"node": "Aviso de pergunta", "type": "main", "index": 0},
@@ -1751,9 +1903,17 @@ def build_chat() -> dict:
             [{"node": "Apagar dados do chat", "type": "main", "index": 0}],
             [{"node": "Arquivo nao suportado", "type": "main", "index": 0}],
             [{"node": "Recusa fora de escopo", "type": "main", "index": 0}],
+            [{"node": "Ler escolha", "type": "main", "index": 0}],
         ]},
         **chain("Aviso de processamento", "Responder aviso"),
-        **chain("Chamar ingestao", "Buscar situacao do processo",
+        **chain("Chamar preparacao", "Descrever lotes", "Perguntar qual imovel",
+                "Responder pergunta de lote"),
+        **chain("Ler escolha", "Decidir escolha", "Entendeu a escolha?"),
+        "Entendeu a escolha?": {"main": [
+            [{"node": "Chamar ingestao", "type": "main", "index": 0}],
+            [{"node": "Repetir pergunta de lote", "type": "main", "index": 0}],
+        ]},
+        **chain("Chamar ingestao", "Limpar pendente", "Buscar situacao do processo",
                 "Traduzir para exibicao", "Resposta da ficha", "Responder ficha"),
         **chain("Carregar ficha do chat", "Montar contexto", "Buscar prompt de Q&A",
                 "Buscar glossario",
@@ -1798,6 +1958,10 @@ return [
   { json: { message: { chat, text: 'Posso processar o antigo dono?' } } },
   { json: { message: { chat, text: '/ajuda' } } },
   { json: { message: { chat, photo: [{ file_id: 'x' }] } } },
+  // Escolha do imovel. Na primeira execucao nao ha edital pendente e isto e
+  // so uma mensagem qualquer; na segunda, com o pendente gravado pelo turno
+  // anterior, vira a confirmacao que dispara a extracao.
+  { json: { message: { chat, text: 'sim' } } },
 ];
 """
 
@@ -1845,6 +2009,102 @@ def build_chat_smoke() -> dict:
     }
 
 
+# ─── 04 — Preparação do edital: converter, detectar lotes, guardar ──────────
+
+PREPARE_ID = "editalprepare001"
+PREPARE_OUTPUT = ROOT / "workflows" / "04-edital-preparar.json"
+
+PREPARE_RESULT = """
+// Fecha a fase barata: o edital virou texto, os campos determinísticos foram
+// extraídos e sabemos quantos imoveis o documento cobre.
+//
+// A extracao cara nao acontece aqui de proposito. Ela custa dois minutos e
+// alguns milesimos de dolar, e gastar isso antes de saber QUAL imovel a pessoa
+// quer e desperdicio quando o edital tem sete.
+const trigger = $('Chamada de outro fluxo').first().json;
+const converted = $('Converter PDF').first().json;
+const deterministic = $('Extrair campos deterministicos').first().json;
+const lots = (deterministic.multi_lot || {}).lots || [];
+
+return [{ json: {
+  ok: true,
+  chat_id: trigger.chat_id,
+  file_name: trigger.file_name,
+  sha256: converted.sha256,
+  pages: converted.pages,
+  markdown: converted.markdown,
+  deterministic,
+  lots,
+  lot_count: lots.length,
+} }];
+"""
+
+
+def build_prepare() -> dict:
+    """Converte o PDF e descobre os imóveis, sem chamar modelo.
+
+    Separado da ingestão porque a pergunta "qual imóvel você quer analisar?"
+    precisa acontecer entre as duas: depois da conversão, que dá a lista, e
+    antes da extração, que é o que custa.
+    """
+    nodes = [
+        node("Chamada de outro fluxo", "n8n-nodes-base.executeWorkflowTrigger", 1.1,
+             [0, 0], {"inputSource": "passthrough"}),
+        node("Converter PDF", "n8n-nodes-base.httpRequest", 4.2, [220, 0], {
+            "method": "POST", "url": "={{ $env.DOCLING_URL }}/convert",
+            "sendBody": True, "contentType": "multipart-form-data",
+            "bodyParameters": {"parameters": [
+                {"parameterType": "formBinaryData", "name": "file",
+                 "inputDataFieldName": "data"}]},
+            "options": {"timeout": 900000}}),
+        node("Extrair campos deterministicos", "n8n-nodes-base.httpRequest", 4.2,
+             [440, 0], {
+                 "method": "POST", "url": "={{ $env.DOCLING_URL }}/extract",
+                 "sendBody": True, "specifyBody": "json",
+                 "jsonBody": "={{ JSON.stringify({ markdown: $json.markdown }) }}",
+                 "options": {"timeout": 60000}}),
+        node("Montar resultado", "n8n-nodes-base.code", 2, [660, 0],
+             {"jsCode": PREPARE_RESULT}),
+        # Guarda o Markdown à espera da resposta. `ON CONFLICT` porque mandar um
+        # segundo edital antes de responder substitui o primeiro, que é o que a
+        # pessoa espera ao trocar de documento.
+        node("Guardar pendente", "n8n-nodes-base.postgres", 2.7, [880, 0], {
+            "operation": "executeQuery",
+            "query": ("INSERT INTO pending_notices "
+                      "(chat_id, file_name, sha256, markdown, deterministic, lots) "
+                      "VALUES ($1, $2, $3, $4, $5, $6) "
+                      "ON CONFLICT (chat_id) DO UPDATE SET "
+                      "file_name = EXCLUDED.file_name, sha256 = EXCLUDED.sha256, "
+                      "markdown = EXCLUDED.markdown, "
+                      "deterministic = EXCLUDED.deterministic, "
+                      "lots = EXCLUDED.lots, created_at = now();"),
+            "options": {"queryReplacement":
+                        "={{ [$json.chat_id, $json.file_name, $json.sha256,"
+                        " $json.markdown, JSON.stringify($json.deterministic),"
+                        " JSON.stringify($json.lots)] }}"},
+        }, credentials=POSTGRES_CRED),
+        node("Resposta", "n8n-nodes-base.code", 2, [1100, 0], {"jsCode": """
+// O item que sai daqui e o de `Montar resultado`, e nao o do Postgres: quem
+// chamou quer a lista de lotes, nao o resultado do INSERT.
+return [{ json: $('Montar resultado').first().json }];
+"""}),
+    ]
+
+    def chain(*names: str) -> dict:
+        return {a: {"main": [[{"node": b, "type": "main", "index": 0}]]}
+                for a, b in zip(names, names[1:])}
+
+    return {
+        "id": PREPARE_ID,
+        "name": "04 - Preparacao do edital",
+        "nodes": nodes,
+        "connections": chain("Chamada de outro fluxo", "Converter PDF",
+                             "Extrair campos deterministicos", "Montar resultado",
+                             "Guardar pendente", "Resposta"),
+        "settings": {"executionOrder": "v1"},
+    }
+
+
 if __name__ == "__main__":
     write(OUTPUT, build())
     write(SMOKE_OUTPUT, build_smoke())
@@ -1852,5 +2112,6 @@ if __name__ == "__main__":
     write(INGEST_SMOKE_OUTPUT, build_ingest_smoke())
     write(LOOKUP_OUTPUT, build_lookup())
     write(LOOKUP_SMOKE_OUTPUT, build_lookup_smoke())
+    write(PREPARE_OUTPUT, build_prepare())
     write(CHAT_OUTPUT, build_chat())
     write(CHAT_SMOKE_OUTPUT, build_chat_smoke())

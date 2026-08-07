@@ -46,6 +46,39 @@
       "parameters": {
         "workflowId": {
           "__rl": true,
+          "value": "editalprepare001",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "chamar-preparacao",
+      "name": "Chamar preparacao",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        600,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst prepared = $input.first().json;\nconst lots = prepared.lots || [];\nreturn [{ json: {\n  chat_id: prepared.chat_id,\n  file_name: prepared.file_name,\n  sha256: prepared.sha256,\n  markdown: prepared.markdown,\n  deterministic: prepared.deterministic,\n  lot: lots.length > 1 ? lots[0] : null,\n} }];\n"
+      },
+      "id": "escolher-o-unico-lote",
+      "name": "Escolher o unico lote",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
           "value": "editalingest0001",
           "mode": "id"
         },
@@ -58,7 +91,7 @@
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
       "position": [
-        600,
+        1000,
         0
       ]
     }
@@ -87,6 +120,28 @@
       ]
     },
     "Identificar o chat": {
+      "main": [
+        [
+          {
+            "node": "Chamar preparacao",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chamar preparacao": {
+      "main": [
+        [
+          {
+            "node": "Escolher o unico lote",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Escolher o unico lote": {
       "main": [
         [
           {

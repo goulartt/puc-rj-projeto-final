@@ -62,6 +62,10 @@ psql -c "SELECT role, chat_id, model, input_tokens, output_tokens, cost_usd, err
 
 psql -c "SELECT * FROM budget_spent;"      # total gasto contra BUDGET_USD_LIMIT
 psql -c "SELECT * FROM usage_by_chat;"     # uso e custo por conversa
+
+# editais convertidos à espera da escolha do imóvel
+psql -c "SELECT chat_id, file_name, jsonb_array_length(lots) AS lotes, created_at
+           FROM pending_notices;"
 psql -c "SELECT * FROM llm_call_health;"   # taxa de erro por modelo
 
 # situação processual consultada durante a ingestão
@@ -106,8 +110,15 @@ pensar. `output_tokens_per_second` na view separa as duas coisas.
 | Quando | O quê |
 |---|---|
 | ~1 s | "Recebi o edital — <nome>." |
-| ~5 s | "Documento lido — N páginas. Agora estou extraindo…" |
+| ~15 s | "Encontrei este imóvel: … É esse?" ou a lista de lotes |
+| — | *a pessoa responde* |
 | ~110 s | a ficha |
+
+A extração só começa depois da confirmação. Num edital com sete imóveis, isso é
+a diferença entre analisar o lote certo e analisar o primeiro da lista.
+
+O Markdown fica em `pending_notices` entre as duas mensagens, com validade de
+seis horas — a conversão já foi paga e a pessoa não reenvia o PDF.
 
 Não há um terceiro aviso por tempo decorrido, e não é esquecimento: o nó Wait
 do n8n suspende a **execução inteira**, não um ramo. Um "avise se passar de um

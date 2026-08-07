@@ -236,6 +236,19 @@ def present(payload: dict = Body(...)) -> JSONResponse:
                                              deterministic=deterministic))
 
 
+@app.post("/lot-choice")
+def lot_choice(payload: dict = Body(...)) -> JSONResponse:
+    """Interpreta a resposta à pergunta "qual imóvel você quer analisar?"."""
+    lots = payload.get("lots") or []
+    if not isinstance(lots, list):
+        raise HTTPException(status_code=400, detail="`lots` deve ser uma lista")
+
+    verdict = scope.parse_lot_choice(payload.get("text") or "", lots)
+    chosen = lots[verdict["index"] - 1] if verdict["understood"] else None
+    return JSONResponse({**verdict, "lot": chosen,
+                         "options": presentation.describe_lots(lots)})
+
+
 @app.post("/movements/analyze")
 def analyze_movements(payload: dict = Body(...)) -> JSONResponse:
     """Traduz a resposta do DataJud em sinais de risco para quem arremata.

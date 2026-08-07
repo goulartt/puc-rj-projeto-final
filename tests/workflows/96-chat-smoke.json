@@ -31,7 +31,7 @@
     },
     {
       "parameters": {
-        "jsCode": "\n// Mensagens sinteticas no formato que o Telegram entrega, uma por caminho do\n// roteador. O chat_id e o mesmo que a ingestao usou no smoke test, entao o\n// caminho de pergunta encontra a ficha real do edital de exemplo.\n//\n// A primeira leva o PDF de verdade. Sem ela o ramo de documento — o mais caro\n// e o que ja quebrou duas vezes, primeiro perdendo o binario e depois falhando\n// no envio — ficava fora do teste.\nconst chat = { id: 'smoke-test' };\nconst pdf = $('Ler edital do disco').first();\nreturn [\n  { json: { message: { chat, document: {\n      file_name: 'edital-exemplo.pdf', mime_type: 'application/pdf' } } },\n    binary: pdf.binary },\n  { json: { message: { chat, text: 'Esse imovel esta ocupado?' } } },\n  { json: { message: { chat, text: 'Vale a pena comprar esse imovel?' } } },\n  { json: { message: { chat, text: 'O que e comissao do leiloeiro?' } } },\n  { json: { message: { chat, text: 'Posso processar o antigo dono?' } } },\n  { json: { message: { chat, text: '/ajuda' } } },\n  { json: { message: { chat, photo: [{ file_id: 'x' }] } } },\n];\n"
+        "jsCode": "\n// Mensagens sinteticas no formato que o Telegram entrega, uma por caminho do\n// roteador. O chat_id e o mesmo que a ingestao usou no smoke test, entao o\n// caminho de pergunta encontra a ficha real do edital de exemplo.\n//\n// A primeira leva o PDF de verdade. Sem ela o ramo de documento — o mais caro\n// e o que ja quebrou duas vezes, primeiro perdendo o binario e depois falhando\n// no envio — ficava fora do teste.\nconst chat = { id: 'smoke-test' };\nconst pdf = $('Ler edital do disco').first();\nreturn [\n  { json: { message: { chat, document: {\n      file_name: 'edital-exemplo.pdf', mime_type: 'application/pdf' } } },\n    binary: pdf.binary },\n  { json: { message: { chat, text: 'Esse imovel esta ocupado?' } } },\n  { json: { message: { chat, text: 'Vale a pena comprar esse imovel?' } } },\n  { json: { message: { chat, text: 'O que e comissao do leiloeiro?' } } },\n  { json: { message: { chat, text: 'Posso processar o antigo dono?' } } },\n  { json: { message: { chat, text: '/ajuda' } } },\n  { json: { message: { chat, photo: [{ file_id: 'x' }] } } },\n  // Escolha do imovel. Na primeira execucao nao ha edital pendente e isto e\n  // so uma mensagem qualquer; na segunda, com o pendente gravado pelo turno\n  // anterior, vira a confirmacao que dispara a extracao.\n  { json: { message: { chat, text: 'sim' } } },\n];\n"
       },
       "id": "mensagem-no-telegram",
       "name": "Mensagem no Telegram",
@@ -98,6 +98,43 @@
       "typeVersion": 2,
       "position": [
         700,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "DELETE FROM pending_notices WHERE created_at < now() - interval '6 hours'; SELECT file_name, sha256, markdown, deterministic, lots FROM pending_notices WHERE chat_id = $1;",
+        "options": {
+          "queryReplacement": "={{ [$json.chat_id] }}"
+        }
+      },
+      "id": "buscar-pendente",
+      "name": "Buscar pendente",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        700,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "leilao-postgres",
+          "name": "Postgres do projeto"
+        }
+      },
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Reconhece a resposta a \"qual imovel?\" como rota propria.\n//\n// O roteador anterior nao tem como saber disso: ele so ve o texto, e \"2\" e uma\n// mensagem valida em qualquer contexto. E a existencia de um edital pendente\n// nesta conversa que transforma a mensagem numa escolha.\nconst pending = $input.all().map((i) => i.json).filter((r) => r && r.lots);\nconst waiting = pending.length ? pending[0] : null;\n\n// Com um edital pendente, nem toda mensagem e escolha de lote. Sem esta\n// distincao, \"Esse imovel esta ocupado?\" viraria uma escolha invalida e a\n// pessoa receberia \"nao entendi qual imovel\" no lugar da resposta.\n//\n// Pergunta se reconhece por forma, nao por conteudo: termina em interrogacao\n// ou comeca com palavra interrogativa. O resto — \"2\", \"sim\", \"a 81.909\" — e\n// escolha, que e o que se espera logo depois da pergunta.\nconst QUESTION = /\\?\\s*$|^\\s*(qual|quais|quanto|quantos|quando|como|onde|quem|por que|porque|o que|oq|existe|tem |ha )/i;\n\nreturn $('Aplicar escopo').all().map((entry) => {\n  if (!waiting) return entry;\n  if (entry.json.route !== 'question' && entry.json.route !== 'out_of_scope') {\n    return entry;\n  }\n  if (QUESTION.test(entry.json.text || '')) return entry;\n  return { json: { ...entry.json, route: 'lot_choice', pending: waiting },\n           binary: entry.binary };\n});\n"
+      },
+      "id": "resolver-pendente",
+      "name": "Resolver pendente",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        780,
         0
       ]
     },
@@ -236,6 +273,28 @@
                 "combinator": "and"
               },
               "outputKey": "out_of_scope"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "lot_choice",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "lot_choice"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "outputKey": "lot_choice"
             }
           ]
         },
@@ -256,6 +315,149 @@
       "parameters": {
         "workflowId": {
           "__rl": true,
+          "value": "editalprepare001",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "chamar-preparacao",
+      "name": "Chamar preparacao",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        660,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DOCLING_URL }}/lot-choice",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: '', lots: $json.lots }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "descrever-lotes",
+      "name": "Descrever lotes",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        760,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Formatacao das mensagens em HTML, e nao no Markdown legado do Telegram.\n//\n// O Markdown legado quebra com um unico caractere desemparelhado, e a mensagem\n// inteira e recusada com 'Bad request' — a resposta some sem chegar a pessoa e\n// sem erro visivel na conversa. Aconteceu de verdade: a ficha trazia o campo\n// `debts.enforced_claim` na secao de lacunas, e aquele underscore solto\n// derrubou o envio. Como os nomes de campo do schema sao snake_case, a falha\n// era sistematica: quase toda ficha com lacunas quebraria.\n//\n// Em HTML o escape resolve na origem. Escapamos tudo o que e dinamico e so\n// depois envolvemos com as tags que nos mesmos geramos, entao nao ha como\n// produzir marcacao desbalanceada.\n\nfunction esc(value) {\n  return String(value == null ? '' : value)\n    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n}\n\nfunction bold(value) { return '<b>' + esc(value) + '</b>'; }\n\n// O modelo responde em Markdown por habito, e em HTML isso apareceria literal\n// como `**negrito**`. Convertemos os poucos casos que ele usa, sempre DEPOIS\n// do escape — os pares abaixo sao gerados aqui e por isso sempre fecham.\nfunction fromMarkdown(text) {\n  return esc(text)\n    .replace(/^\\s*#{1,6}\\s*(.+)$/gm, (m, title) => '<b>' + title.trim() + '</b>')\n    .replace(/\\*\\*([^*\\n]+)\\*\\*/g, '<b>$1</b>')\n    .replace(/(^|[^*])\\*([^*\\n]+)\\*(?!\\*)/g, '$1<i>$2</i>')\n    .replace(/`([^`\\n]+)`/g, '<code>$1</code>')\n    .replace(/^\\s*[-*]\\s+/gm, '• ');\n}\n\n// O Telegram corta em 4096 caracteres. Truncar com aviso e melhor que a\n// mensagem sumir; o corte respeita a ultima quebra de linha para nao partir\n// uma tag ao meio.\nfunction fit(text) {\n  if (text.length <= 3900) return text;\n  const cut = text.slice(0, 3900);\n  const at = cut.lastIndexOf(String.fromCharCode(10));\n  return (at > 3000 ? cut.slice(0, at) : cut) +\n         String.fromCharCode(10, 10) + '<i>(resposta truncada)</i>';\n}\n\n// A pergunta que evita analisar o imovel errado.\n//\n// Confirmar tambem quando ha um imovel so e decisao de produto: alem de\n// validar que e o bem certo, protege do caso em que a deteccao erra e existe\n// um segundo lote que nao foi visto.\n// Duas origens: a preparacao tem o edital e os lotes; o servico tem as\n// descricoes prontas. Ler tudo de `$input` pegaria so a segunda, que nao traz\n// chat_id nem nome de arquivo — foi o que fez a primeira versao dizer \"nao\n// consegui identificar a matricula\" para um edital que tinha uma.\nconst prepared = $('Chamar preparacao').first().json;\nconst described = $input.first().json;\nconst options = described.options || [];\nconst lots = prepared.lots || [];\nconst NL = String.fromCharCode(10);\nconst linhas = [];\n\nif (lots.length > 1) {\n  linhas.push(bold('Este edital cobre ' + lots.length + ' imoveis.') +\n              ' Qual deles voce quer analisar?', '');\n  options.forEach((o, i) => linhas.push((i + 1) + '. ' + esc(o)));\n  linhas.push('', 'Responda com o numero ou com a matricula.');\n} else if (lots.length === 1) {\n  linhas.push(bold('Encontrei este imovel no edital:'), '',\n              esc(options[0] || 'imovel'), '',\n              'E esse que voce quer analisar? Responda ' + bold('sim') +\n              ' para eu montar a ficha.');\n} else {\n  // Sem matricula legivel nao da para listar, mas da para seguir: a extracao\n  // funciona igual, so nao ha o que confirmar.\n  linhas.push(bold('Recebi o edital') + ' — ' + esc(prepared.file_name || 'documento') +\n              '.', '', 'Nao consegui identificar a matricula do imovel no texto. ' +\n              'Responda ' + bold('sim') + ' para eu analisar o documento assim mesmo.');\n}\n\nreturn [{ json: { chat_id: prepared.chat_id, text: linhas.join(NL) } }];\n"
+      },
+      "id": "perguntar-qual-imovel",
+      "name": "Perguntar qual imovel",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        820,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all();"
+      },
+      "id": "responder-pergunta-de-lote",
+      "name": "Responder pergunta de lote",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        900,
+        -320
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DOCLING_URL }}/lot-choice",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ text: $json.text, lots: $json.pending.lots }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "ler-escolha",
+      "name": "Ler escolha",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Formatacao das mensagens em HTML, e nao no Markdown legado do Telegram.\n//\n// O Markdown legado quebra com um unico caractere desemparelhado, e a mensagem\n// inteira e recusada com 'Bad request' — a resposta some sem chegar a pessoa e\n// sem erro visivel na conversa. Aconteceu de verdade: a ficha trazia o campo\n// `debts.enforced_claim` na secao de lacunas, e aquele underscore solto\n// derrubou o envio. Como os nomes de campo do schema sao snake_case, a falha\n// era sistematica: quase toda ficha com lacunas quebraria.\n//\n// Em HTML o escape resolve na origem. Escapamos tudo o que e dinamico e so\n// depois envolvemos com as tags que nos mesmos geramos, entao nao ha como\n// produzir marcacao desbalanceada.\n\nfunction esc(value) {\n  return String(value == null ? '' : value)\n    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n}\n\nfunction bold(value) { return '<b>' + esc(value) + '</b>'; }\n\n// O modelo responde em Markdown por habito, e em HTML isso apareceria literal\n// como `**negrito**`. Convertemos os poucos casos que ele usa, sempre DEPOIS\n// do escape — os pares abaixo sao gerados aqui e por isso sempre fecham.\nfunction fromMarkdown(text) {\n  return esc(text)\n    .replace(/^\\s*#{1,6}\\s*(.+)$/gm, (m, title) => '<b>' + title.trim() + '</b>')\n    .replace(/\\*\\*([^*\\n]+)\\*\\*/g, '<b>$1</b>')\n    .replace(/(^|[^*])\\*([^*\\n]+)\\*(?!\\*)/g, '$1<i>$2</i>')\n    .replace(/`([^`\\n]+)`/g, '<code>$1</code>')\n    .replace(/^\\s*[-*]\\s+/gm, '• ');\n}\n\n// O Telegram corta em 4096 caracteres. Truncar com aviso e melhor que a\n// mensagem sumir; o corte respeita a ultima quebra de linha para nao partir\n// uma tag ao meio.\nfunction fit(text) {\n  if (text.length <= 3900) return text;\n  const cut = text.slice(0, 3900);\n  const at = cut.lastIndexOf(String.fromCharCode(10));\n  return (at > 3000 ? cut.slice(0, at) : cut) +\n         String.fromCharCode(10, 10) + '<i>(resposta truncada)</i>';\n}\n\n// Traduz a leitura da escolha em \"extrai\" ou \"pergunta de novo\".\nconst verdict = $input.first().json;\nconst routed = $('Resolver pendente').all()\n  .filter((i) => i.json.route === 'lot_choice')[0].json;\nconst pending = routed.pending;\nconst NL = String.fromCharCode(10);\n\nif (!verdict.understood) {\n  const opcoes = (verdict.options || [])\n    .map((o, i) => (i + 1) + '. ' + esc(o)).join(NL);\n  const pedido = (pending.lots || []).length > 1\n    ? 'Nao entendi qual imovel voce quer.' + NL + NL + opcoes + NL + NL +\n      'Responda com o numero ou com a matricula.'\n    : 'Responda ' + bold('sim') + ' para eu analisar este imovel.';\n  return [{ json: { proceed: false, chat_id: routed.chat_id, text: pedido } }];\n}\n\n// Segue para a extracao com tudo que a preparacao ja produziu: o Markdown nao\n// e reconvertido e a pessoa nao reenvia o PDF.\nreturn [{ json: {\n  proceed: true,\n  chat_id: routed.chat_id,\n  file_name: pending.file_name,\n  sha256: pending.sha256,\n  markdown: pending.markdown,\n  deterministic: pending.deterministic,\n  // `lot` so quando ha o que desambiguar: com um imovel so, instruir o modelo a\n  // ignorar os demais seria instrucao sobre algo que nao existe.\n  lot: (pending.lots || []).length > 1 ? verdict.lot : null,\n} }];\n"
+      },
+      "id": "decidir-escolha",
+      "name": "Decidir escolha",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        760,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "proceed",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.proceed }}"
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "entendeu-a-escolha?",
+      "name": "Entendeu a escolha?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        860,
+        700
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all();"
+      },
+      "id": "repetir-pergunta-de-lote",
+      "name": "Repetir pergunta de lote",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        820
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
           "value": "editalingest0001",
           "mode": "id"
         },
@@ -268,9 +470,34 @@
       "type": "n8n-nodes-base.executeWorkflow",
       "typeVersion": 1.3,
       "position": [
-        660,
-        -320
+        960,
+        700
       ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "DELETE FROM pending_notices WHERE chat_id = $1;",
+        "options": {
+          "queryReplacement": "={{ [$('Decidir escolha').first().json.chat_id] }}"
+        }
+      },
+      "id": "limpar-pendente",
+      "name": "Limpar pendente",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        1000,
+        700
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "leilao-postgres",
+          "name": "Postgres do projeto"
+        }
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
     },
     {
       "parameters": {
@@ -701,6 +928,28 @@
       "main": [
         [
           {
+            "node": "Buscar pendente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Buscar pendente": {
+      "main": [
+        [
+          {
+            "node": "Resolver pendente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Resolver pendente": {
+      "main": [
+        [
+          {
             "node": "Caminho",
             "type": "main",
             "index": 0
@@ -717,7 +966,7 @@
             "index": 0
           },
           {
-            "node": "Chamar ingestao",
+            "node": "Chamar preparacao",
             "type": "main",
             "index": 0
           }
@@ -761,6 +1010,13 @@
             "type": "main",
             "index": 0
           }
+        ],
+        [
+          {
+            "node": "Ler escolha",
+            "type": "main",
+            "index": 0
+          }
         ]
       ]
     },
@@ -775,7 +1031,91 @@
         ]
       ]
     },
+    "Chamar preparacao": {
+      "main": [
+        [
+          {
+            "node": "Descrever lotes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Descrever lotes": {
+      "main": [
+        [
+          {
+            "node": "Perguntar qual imovel",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Perguntar qual imovel": {
+      "main": [
+        [
+          {
+            "node": "Responder pergunta de lote",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ler escolha": {
+      "main": [
+        [
+          {
+            "node": "Decidir escolha",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Decidir escolha": {
+      "main": [
+        [
+          {
+            "node": "Entendeu a escolha?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Entendeu a escolha?": {
+      "main": [
+        [
+          {
+            "node": "Chamar ingestao",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Repetir pergunta de lote",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "Chamar ingestao": {
+      "main": [
+        [
+          {
+            "node": "Limpar pendente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Limpar pendente": {
       "main": [
         [
           {

@@ -1,0 +1,176 @@
+{
+  "id": "editalprepare001",
+  "name": "04 - Preparacao do edital",
+  "nodes": [
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "chamada-de-outro-fluxo",
+      "name": "Chamada de outro fluxo",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1.1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DOCLING_URL }}/convert",
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "data"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 900000
+        }
+      },
+      "id": "converter-pdf",
+      "name": "Converter PDF",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DOCLING_URL }}/extract",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ markdown: $json.markdown }) }}",
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "extrair-campos-deterministicos",
+      "name": "Extrair campos deterministicos",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Fecha a fase barata: o edital virou texto, os campos determinísticos foram\n// extraídos e sabemos quantos imoveis o documento cobre.\n//\n// A extracao cara nao acontece aqui de proposito. Ela custa dois minutos e\n// alguns milesimos de dolar, e gastar isso antes de saber QUAL imovel a pessoa\n// quer e desperdicio quando o edital tem sete.\nconst trigger = $('Chamada de outro fluxo').first().json;\nconst converted = $('Converter PDF').first().json;\nconst deterministic = $('Extrair campos deterministicos').first().json;\nconst lots = (deterministic.multi_lot || {}).lots || [];\n\nreturn [{ json: {\n  ok: true,\n  chat_id: trigger.chat_id,\n  file_name: trigger.file_name,\n  sha256: converted.sha256,\n  pages: converted.pages,\n  markdown: converted.markdown,\n  deterministic,\n  lots,\n  lot_count: lots.length,\n} }];\n"
+      },
+      "id": "montar-resultado",
+      "name": "Montar resultado",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO pending_notices (chat_id, file_name, sha256, markdown, deterministic, lots) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (chat_id) DO UPDATE SET file_name = EXCLUDED.file_name, sha256 = EXCLUDED.sha256, markdown = EXCLUDED.markdown, deterministic = EXCLUDED.deterministic, lots = EXCLUDED.lots, created_at = now();",
+        "options": {
+          "queryReplacement": "={{ [$json.chat_id, $json.file_name, $json.sha256, $json.markdown, JSON.stringify($json.deterministic), JSON.stringify($json.lots)] }}"
+        }
+      },
+      "id": "guardar-pendente",
+      "name": "Guardar pendente",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        880,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "leilao-postgres",
+          "name": "Postgres do projeto"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// O item que sai daqui e o de `Montar resultado`, e nao o do Postgres: quem\n// chamou quer a lista de lotes, nao o resultado do INSERT.\nreturn [{ json: $('Montar resultado').first().json }];\n"
+      },
+      "id": "resposta",
+      "name": "Resposta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Chamada de outro fluxo": {
+      "main": [
+        [
+          {
+            "node": "Converter PDF",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Converter PDF": {
+      "main": [
+        [
+          {
+            "node": "Extrair campos deterministicos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extrair campos deterministicos": {
+      "main": [
+        [
+          {
+            "node": "Montar resultado",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Montar resultado": {
+      "main": [
+        [
+          {
+            "node": "Guardar pendente",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Guardar pendente": {
+      "main": [
+        [
+          {
+            "node": "Resposta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

@@ -130,3 +130,51 @@ def test_classify_all_preserva_ordem() -> None:
         ["esse imóvel está ocupado?", "vale a pena?", "o que é praça?"]
     )
     assert [r["in_scope"] for r in resultados] == [True, False, True]
+
+
+# ─── Escolha do imóvel ──────────────────────────────────────────────────────
+#
+# Um edital pode cobrir vários imóveis — dois dos cinco reais cobrem. Escolher
+# o lote errado faria a ficha descrever o imóvel errado com toda a aparência de
+# estar certa, que é o pior desfecho possível para este produto.
+
+LOTES = [{"registry": "7.195"}, {"registry": "81.909"}, {"registry": "9.937"}]
+
+
+def test_numero_da_lista() -> None:
+    assert scope.parse_lot_choice("2", LOTES)["index"] == 2
+    assert scope.parse_lot_choice("quero o 3", LOTES)["index"] == 3
+
+
+def test_matricula_vence_o_numero_da_lista() -> None:
+    """`quero a 81.909` traz números que não são índice."""
+    resultado = scope.parse_lot_choice("quero a 81.909", LOTES)
+    assert resultado["index"] == 2
+    assert resultado["reason"] == "matricula"
+
+
+def test_matricula_sem_pontuacao() -> None:
+    assert scope.parse_lot_choice("matricula 9937", LOTES)["index"] == 3
+
+
+def test_ordinal_por_extenso() -> None:
+    assert scope.parse_lot_choice("o segundo", LOTES)["index"] == 2
+    assert scope.parse_lot_choice("a terceira", LOTES)["index"] == 3
+
+
+def test_sim_so_resolve_quando_ha_um_imovel() -> None:
+    """Com vários, "sim" confirma sem dizer qual — e adivinhar seria o erro."""
+    assert scope.parse_lot_choice("sim", LOTES)["understood"] is False
+    assert scope.parse_lot_choice("sim", [{"registry": "106.233"}])["index"] == 1
+
+
+def test_resposta_ambigua_nao_e_adivinhada() -> None:
+    """Perguntar de novo custa uma mensagem; errar custa a ficha inteira."""
+    for texto in ("1 ou 2", "sei la", "", "42"):
+        assert scope.parse_lot_choice(texto, LOTES)["understood"] is False
+
+
+def test_recusa_e_reconhecida_como_recusa() -> None:
+    resultado = scope.parse_lot_choice("nenhum", LOTES)
+    assert resultado["understood"] is False
+    assert resultado["reason"] == "recusou"

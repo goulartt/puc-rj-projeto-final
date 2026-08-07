@@ -41,8 +41,9 @@ docker compose up -d
 ./scripts/expose-bot.sh   # publica o webhook do Telegram
 ```
 
-No Telegram, envie o PDF do edital ao bot. Em ~4 minutos ele responde com a
-ficha em três blocos: **a favor** (deságio da segunda praça, ausência de ônus,
+No Telegram, envie o PDF do edital ao bot. Em segundos ele mostra o imóvel que
+encontrou — ou a lista, quando o edital cobre vários — e pergunta qual você
+quer analisar. Confirmado, monta a ficha em ~2 minutos, em três blocos: **a favor** (deságio da segunda praça, ausência de ônus,
 processo sem sinal de cancelamento), **pontos de atenção** e **o que o edital
 não informa**. Depois é conversa normal:
 
@@ -120,6 +121,7 @@ acumulado passa do teto — antes de gastar, não depois.
 | `workflows/01-telegram-chat.json` | chat, roteamento, escopo, respostas |
 | `workflows/02-edital-ingest.json` | PDF → ficha validada |
 | `workflows/03-processo-lookup.json` | sub-fluxo: DataJud → sinais de risco |
+| `workflows/04-edital-preparar.json` | PDF → texto + lotes, antes da confirmação |
 
 Todos são gerados por `scripts/build-workflows.py`, que roda `node --check` em
 cada nó de código antes de escrever o JSON. O fluxo é código versionado, não
