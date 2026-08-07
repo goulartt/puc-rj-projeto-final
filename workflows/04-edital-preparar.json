@@ -49,7 +49,7 @@
         "url": "={{ $env.DOCLING_URL }}/extract",
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ markdown: $json.markdown }) }}",
+        "jsonBody": "={{ JSON.stringify({ markdown: $('Converter PDF').first().json.markdown }) }}",
         "options": {
           "timeout": 60000
         }
@@ -59,8 +59,72 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
       "position": [
-        440,
+        640,
+        -80
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DOCLING_URL }}/inspect",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ markdown: $('Converter PDF').first().json.markdown }) }}",
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "conferir-se-e-edital",
+      "name": "Conferir se e edital",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        560,
         0
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "notice",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json.is_notice }}"
+            }
+          ],
+          "combinator": "and"
+        }
+      },
+      "id": "e-um-edital?",
+      "name": "E um edital?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        610,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst trigger = $('Chamada de outro fluxo').first().json;\nconst verdict = $input.first().json;\nreturn [{ json: {\n  ok: false, rejected: true, reason: verdict.reason, message: verdict.message,\n  chat_id: trigger.chat_id, file_name: trigger.file_name,\n} }];\n"
+      },
+      "id": "recusar-documento",
+      "name": "Recusar documento",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        180
       ]
     },
     {
@@ -129,7 +193,36 @@
       "main": [
         [
           {
+            "node": "Conferir se e edital",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Conferir se e edital": {
+      "main": [
+        [
+          {
+            "node": "E um edital?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "E um edital?": {
+      "main": [
+        [
+          {
             "node": "Extrair campos deterministicos",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Recusar documento",
             "type": "main",
             "index": 0
           }

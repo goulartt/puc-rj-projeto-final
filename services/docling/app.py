@@ -36,7 +36,7 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 sys.path.insert(0, "/app/lib")
-from extractors import cnj, fields, movements, presentation, scope  # noqa: E402
+from extractors import cnj, document, fields, movements, presentation, scope  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("docling-service")
@@ -234,6 +234,21 @@ def present(payload: dict = Body(...)) -> JSONResponse:
     deterministic = payload.get("deterministic")
     return JSONResponse(presentation.present(ficha, case, max_items=max_items,
                                              deterministic=deterministic))
+
+
+@app.post("/inspect")
+def inspect_document(payload: dict = Body(...)) -> JSONResponse:
+    """Diz se o documento convertido é mesmo um edital de leilão.
+
+    Chamado logo depois da conversão e antes de tudo o que custa. Devolve a
+    mensagem pronta quando recusa, para o fluxo não ter de saber o motivo.
+    """
+    markdown = payload.get("markdown") or ""
+    verdict = document.inspect(markdown)
+    return JSONResponse({
+        **verdict,
+        "message": None if verdict["is_notice"] else document.rejection_message(verdict),
+    })
 
 
 @app.post("/lot-choice")

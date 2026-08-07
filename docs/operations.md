@@ -78,6 +78,27 @@ psql -c "SELECT cnj_number, status, movements->>'movement_count' AS movimentos,
 `error`. Sem isso, uma falha (custo zero, tokens zero) ficaria indistinguível de
 uma chamada local bem-sucedida.
 
+### As travas de entrada
+
+Duas conferências antes de qualquer chamada de modelo, ambas em
+`services/extractors/document.py`:
+
+| Situação | Resposta |
+|---|---|
+| Foto, vídeo, áudio, figurinha, xlsx… | diz **o que veio** e como reenviar |
+| PDF digitalizado, sem camada de texto | sugere o PDF do site do leilão |
+| Contrato, matrícula, certidão | "não encontrei menção a leilão, praça ou arrematação" |
+| Trecho ou anexo solto de edital | "faltam descrição do imóvel, avaliação ou datas" |
+
+O classificador conta sinais do domínio e **exige** pelo menos um termo de
+leilão. Só contar deixaria passar uma matrícula avulsa, que marca imóvel,
+matrícula, valor e avaliação sem ser edital nenhum.
+
+O limiar é baixo de propósito, ao contrário do filtro de escopo: recusar um
+edital legítimo de redação incomum impede a pessoa de usar o sistema, enquanto
+aceitar um documento errado custa meio centavo e produz uma ficha visivelmente
+sem sentido. Os cinco editais reais do corpus marcam 10 de 10 sinais.
+
 ### Quanto tempo cada etapa leva
 
 ```bash

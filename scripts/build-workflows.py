@@ -1244,9 +1244,21 @@ const isPdf = Boolean(document) && (
   /\\.pdf$/i.test(document.file_name || '')
 );
 
+// O que a pessoa mandou, quando nao foi PDF nem texto. Nomear o anexo torna a
+// recusa util: "envie como documento, nao como foto" so ajuda quem mandou
+// foto, e o Telegram tem meia duzia de outros tipos.
+let attachment = null;
+if ((message.photo || []).length) attachment = 'foto';
+else if (message.video || message.video_note) attachment = 'video';
+else if (message.voice || message.audio) attachment = 'audio';
+else if (message.sticker) attachment = 'figurinha';
+else if (message.location) attachment = 'localizacao';
+else if (message.contact) attachment = 'contato';
+else if (document) attachment = 'arquivo';
+
 let route = 'question';
 if (isPdf) route = 'document';
-else if (document || (message.photo || []).length) route = 'unsupported_file';
+else if (attachment) route = 'unsupported_file';
 else if (/^\\/(start|ajuda|help)\\b/i.test(text)) route = 'help';
 else if (/^\\/apagar\\b/i.test(text)) route = 'forget';
 else if (!text) route = 'unsupported_file';
@@ -1259,6 +1271,8 @@ return {
     chat_id: chatId,
     text,
     file_name: isPdf ? (document.file_name || 'edital.pdf') : null,
+    attachment,
+    attachment_name: document ? (document.file_name || null) : null,
   },
   binary: entry.binary,
 };
@@ -1387,6 +1401,13 @@ CHAT_ASK_LOT = CHAT_FORMAT_HELPERS + """
 // chat_id nem nome de arquivo — foi o que fez a primeira versao dizer "nao
 // consegui identificar a matricula" para um edital que tinha uma.
 const prepared = $('Chamar preparacao').first().json;
+
+// Documento recusado na conferencia: a mensagem ja vem pronta do servico, que
+// e quem sabe por que recusou.
+if (prepared.rejected) {
+  return [{ json: { chat_id: prepared.chat_id, text: esc(prepared.message) } }];
+}
+
 const described = $input.first().json;
 const options = described.options || [];
 const lots = prepared.lots || [];
@@ -1686,13 +1707,33 @@ return [{ json: { chat_id: routed.chat_id, text:
   'Envie um novo PDF quando quiser comecar de novo.' } }];
 """
 
-CHAT_UNSUPPORTED = """
-const routed = $('Aplicar escopo').all()
-  .filter((i) => i.json.route === 'unsupported_file')[0].json;
+CHAT_UNSUPPORTED = CHAT_FORMAT_HELPERS + """
 const NL = String.fromCharCode(10);
-return [{ json: { chat_id: routed.chat_id, text:
-  'So consigo ler edital em PDF. Envie o arquivo como documento, nao como foto.' + NL + NL +
-  'Use /ajuda para ver o que eu faco.' } }];
+
+// Cada tipo tem um conserto diferente, e dizer qual poupa uma tentativa.
+const CONSERTO = {
+  foto: 'Foto de documento eu nao consigo ler. Reenvie o arquivo pelo clipe, ' +
+        'escolhendo ' + bold('Arquivo') + ' em vez de ' + bold('Galeria') + '.',
+  arquivo: (r) => 'Recebi ' + esc(r.attachment_name || 'um arquivo') +
+                  ', que nao e PDF. Envie o edital em PDF.',
+  video: 'Nao leio video.',
+  audio: 'Nao entendo audio — sou so texto por enquanto.',
+  figurinha: 'Bonita, mas nao da para analisar.',
+  localizacao: 'Localizacao nao me diz nada sobre o leilao.',
+  contato: 'Nao faco nada com contato.',
+};
+
+return $('Resolver pendente').all()
+  .filter((i) => i.json.route === 'unsupported_file')
+  .map((entry) => {
+    const routed = entry.json;
+    const conserto = typeof CONSERTO[routed.attachment] === 'function'
+      ? CONSERTO[routed.attachment](routed)
+      : (CONSERTO[routed.attachment] || 'So consigo ler edital em PDF.');
+    return { json: { chat_id: routed.chat_id, text:
+      conserto + NL + NL +
+      'Envie o PDF do edital, ou use /ajuda para ver o que eu faco.' } };
+  });
 """
 
 
@@ -1958,6 +1999,8 @@ return [
   { json: { message: { chat, text: 'Posso processar o antigo dono?' } } },
   { json: { message: { chat, text: '/ajuda' } } },
   { json: { message: { chat, photo: [{ file_id: 'x' }] } } },
+  { json: { message: { chat, document: {
+      file_name: 'planilha.xlsx', mime_type: 'application/vnd.ms-excel' } } } },
   // Escolha do imovel. Na primeira execucao nao ha edital pendente e isto e
   // so uma mensagem qualquer; na segunda, com o pendente gravado pelo turno
   // anterior, vira a confirmacao que dispara a extracao.
@@ -2057,12 +2100,39 @@ def build_prepare() -> dict:
                 {"parameterType": "formBinaryData", "name": "file",
                  "inputDataFieldName": "data"}]},
             "options": {"timeout": 900000}}),
+        # Le do no que converteu, e nao de `$json`: entre os dois passaram a
+        # conferencia de documento e o IF, e o item que chega aqui e o veredito,
+        # nao o Markdown.
         node("Extrair campos deterministicos", "n8n-nodes-base.httpRequest", 4.2,
-             [440, 0], {
+             [640, -80], {
                  "method": "POST", "url": "={{ $env.DOCLING_URL }}/extract",
                  "sendBody": True, "specifyBody": "json",
-                 "jsonBody": "={{ JSON.stringify({ markdown: $json.markdown }) }}",
+                 "jsonBody": ("={{ JSON.stringify({ markdown:"
+                              " $('Converter PDF').first().json.markdown }) }}"),
                  "options": {"timeout": 60000}}),
+        node("Conferir se e edital", "n8n-nodes-base.httpRequest", 4.2, [560, 0], {
+            "method": "POST", "url": "={{ $env.DOCLING_URL }}/inspect",
+            "sendBody": True, "specifyBody": "json",
+            "jsonBody": ("={{ JSON.stringify({ markdown:"
+                         " $('Converter PDF').first().json.markdown }) }}"),
+            "options": {"timeout": 30000}}),
+        node("E um edital?", "n8n-nodes-base.if", 2.2, [610, 0], {
+            "conditions": {
+                "options": {"caseSensitive": True, "typeValidation": "strict",
+                            "version": 2},
+                "conditions": [{"id": "notice",
+                                "operator": {"type": "boolean", "operation": "true",
+                                             "singleValue": True},
+                                "leftValue": "={{ $json.is_notice }}"}],
+                "combinator": "and"}}),
+        node("Recusar documento", "n8n-nodes-base.code", 2, [660, 180], {"jsCode": """
+const trigger = $('Chamada de outro fluxo').first().json;
+const verdict = $input.first().json;
+return [{ json: {
+  ok: false, rejected: true, reason: verdict.reason, message: verdict.message,
+  chat_id: trigger.chat_id, file_name: trigger.file_name,
+} }];
+"""}),
         node("Montar resultado", "n8n-nodes-base.code", 2, [660, 0],
              {"jsCode": PREPARE_RESULT}),
         # Guarda o Markdown à espera da resposta. `ON CONFLICT` porque mandar um
@@ -2098,9 +2168,18 @@ return [{ json: $('Montar resultado').first().json }];
         "id": PREPARE_ID,
         "name": "04 - Preparacao do edital",
         "nodes": nodes,
-        "connections": chain("Chamada de outro fluxo", "Converter PDF",
-                             "Extrair campos deterministicos", "Montar resultado",
-                             "Guardar pendente", "Resposta"),
+        "connections": {
+            **chain("Chamada de outro fluxo", "Converter PDF",
+                    "Conferir se e edital", "E um edital?"),
+            # Documento recusado nao passa pela extracao deterministica nem
+            # ocupa uma pendencia: sai por aqui, tendo custado uma conversao.
+            "E um edital?": {"main": [
+                [{"node": "Extrair campos deterministicos", "type": "main", "index": 0}],
+                [{"node": "Recusar documento", "type": "main", "index": 0}],
+            ]},
+            **chain("Extrair campos deterministicos", "Montar resultado",
+                    "Guardar pendente", "Resposta"),
+        },
         "settings": {"executionOrder": "v1"},
     }
 
