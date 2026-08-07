@@ -445,6 +445,19 @@
     },
     {
       "parameters": {
+        "jsCode": "\n// Formatacao das mensagens em HTML, e nao no Markdown legado do Telegram.\n//\n// O Markdown legado quebra com um unico caractere desemparelhado, e a mensagem\n// inteira e recusada com 'Bad request' — a resposta some sem chegar a pessoa e\n// sem erro visivel na conversa. Aconteceu de verdade: a ficha trazia o campo\n// `debts.enforced_claim` na secao de lacunas, e aquele underscore solto\n// derrubou o envio. Como os nomes de campo do schema sao snake_case, a falha\n// era sistematica: quase toda ficha com lacunas quebraria.\n//\n// Em HTML o escape resolve na origem. Escapamos tudo o que e dinamico e so\n// depois envolvemos com as tags que nos mesmos geramos, entao nao ha como\n// produzir marcacao desbalanceada.\n\nfunction esc(value) {\n  return String(value == null ? '' : value)\n    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n}\n\nfunction bold(value) { return '<b>' + esc(value) + '</b>'; }\n\n// O modelo responde em Markdown por habito, e em HTML isso apareceria literal\n// como `**negrito**`. Convertemos os poucos casos que ele usa, sempre DEPOIS\n// do escape — os pares abaixo sao gerados aqui e por isso sempre fecham.\nfunction fromMarkdown(text) {\n  return esc(text)\n    .replace(/^\\s*#{1,6}\\s*(.+)$/gm, (m, title) => '<b>' + title.trim() + '</b>')\n    .replace(/\\*\\*([^*\\n]+)\\*\\*/g, '<b>$1</b>')\n    .replace(/(^|[^*])\\*([^*\\n]+)\\*(?!\\*)/g, '$1<i>$2</i>')\n    .replace(/`([^`\\n]+)`/g, '<code>$1</code>')\n    .replace(/^\\s*[-*]\\s+/gm, '• ');\n}\n\n// O Telegram corta em 4096 caracteres. Truncar com aviso e melhor que a\n// mensagem sumir; o corte respeita a ultima quebra de linha para nao partir\n// uma tag ao meio.\nfunction fit(text) {\n  if (text.length <= 3900) return text;\n  const cut = text.slice(0, 3900);\n  const at = cut.lastIndexOf(String.fromCharCode(10));\n  return (at > 3000 ? cut.slice(0, at) : cut) +\n         String.fromCharCode(10, 10) + '<i>(resposta truncada)</i>';\n}\n\n// Aviso imediato de que a pergunta chegou.\n//\n// A resposta leva de quinze a trinta segundos no modelo local, e nesse\n// intervalo a conversa fica parada sem sinal nenhum. O mesmo problema do PDF,\n// em escala menor: sem retorno, a pessoa nao distingue \"pensando\" de \"quebrou\"\n// e reformula a pergunta, o que gera duas chamadas para uma duvida.\n//\n// So o caminho de pergunta passa por aqui. Recusa fora de escopo e comando sao\n// instantaneos, e avisar antes deles seria ruido.\nconst asked = $input.all();\nif (!asked.length) return [];\n\nconst chatId = asked[0].json.chat_id;\nreturn [{ json: { chat_id: chatId, text:\n  asked.length > 1\n    ? 'Recebi ' + asked.length + ' perguntas. Conferindo na ficha…'\n    : 'Deixa eu conferir na ficha do edital…' } }];\n"
+      },
+      "id": "aviso-de-pergunta",
+      "name": "Aviso de pergunta",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        -200
+      ]
+    },
+    {
+      "parameters": {
         "jsCode": "\n// Formatacao das mensagens em HTML, e nao no Markdown legado do Telegram.\n//\n// O Markdown legado quebra com um unico caractere desemparelhado, e a mensagem\n// inteira e recusada com 'Bad request' — a resposta some sem chegar a pessoa e\n// sem erro visivel na conversa. Aconteceu de verdade: a ficha trazia o campo\n// `debts.enforced_claim` na secao de lacunas, e aquele underscore solto\n// derrubou o envio. Como os nomes de campo do schema sao snake_case, a falha\n// era sistematica: quase toda ficha com lacunas quebraria.\n//\n// Em HTML o escape resolve na origem. Escapamos tudo o que e dinamico e so\n// depois envolvemos com as tags que nos mesmos geramos, entao nao ha como\n// produzir marcacao desbalanceada.\n\nfunction esc(value) {\n  return String(value == null ? '' : value)\n    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n}\n\nfunction bold(value) { return '<b>' + esc(value) + '</b>'; }\n\n// O modelo responde em Markdown por habito, e em HTML isso apareceria literal\n// como `**negrito**`. Convertemos os poucos casos que ele usa, sempre DEPOIS\n// do escape — os pares abaixo sao gerados aqui e por isso sempre fecham.\nfunction fromMarkdown(text) {\n  return esc(text)\n    .replace(/^\\s*#{1,6}\\s*(.+)$/gm, (m, title) => '<b>' + title.trim() + '</b>')\n    .replace(/\\*\\*([^*\\n]+)\\*\\*/g, '<b>$1</b>')\n    .replace(/(^|[^*])\\*([^*\\n]+)\\*(?!\\*)/g, '$1<i>$2</i>')\n    .replace(/`([^`\\n]+)`/g, '<code>$1</code>')\n    .replace(/^\\s*[-*]\\s+/gm, '• ');\n}\n\n// O Telegram corta em 4096 caracteres. Truncar com aviso e melhor que a\n// mensagem sumir; o corte respeita a ultima quebra de linha para nao partir\n// uma tag ao meio.\nfunction fit(text) {\n  if (text.length <= 3900) return text;\n  const cut = text.slice(0, 3900);\n  const at = cut.lastIndexOf(String.fromCharCode(10));\n  return (at > 3000 ? cut.slice(0, at) : cut) +\n         String.fromCharCode(10, 10) + '<i>(resposta truncada)</i>';\n}\n\nconst chatId = $('Aplicar escopo').all()\n  .filter((i) => i.json.route === 'help')[0].json.chat_id;\n\n// O bloco de transparencia nao e cortesia: a pessoa precisa saber que fala com\n// um sistema automatizado, o que acontece com o PDF que ela enviar, e como\n// apagar. Esta em docs/privacy.md e aparece no primeiro contato.\nconst text = [\n  bold('Arremata AI') + ' — assistente para editais de leilao de imovel.',\n  '',\n  'Sou um sistema automatizado, ' + bold('nao sou advogado') + ' e nao substituo analise',\n  'juridica. Explico termos, prazos e riscos do edital, e mostro de onde',\n  'tirei cada resposta.',\n  '',\n  bold('Como usar'),\n  'Envie o PDF do edital e eu monto uma ficha com prazos, valores, onus,',\n  'debitos e o que o documento <i>nao</i> informa. Depois pergunte o que quiser',\n  'sobre ele, em portugues normal. Sem edital carregado, respondo duvidas',\n  'gerais de leilao.',\n  '',\n  bold('O que faco com seus dados'),\n  'Guardo o texto do edital e a ficha para responder suas perguntas. A',\n  'extracao usa um modelo de terceiro. CPF que apareca no documento e',\n  'mascarado antes de qualquer coisa ser gravada.',\n  'Use /apagar para remover tudo desta conversa.',\n  '',\n  bold('O que nao faco'),\n  'Nao digo se vale a pena arrematar, nao estimo valor de mercado e nao dou',\n  'orientacao juridica.',\n].join(String.fromCharCode(10));\n\nreturn [{ json: { chat_id: chatId, text } }];\n"
       },
       "id": "texto-de-ajuda",
@@ -583,6 +596,30 @@
       "position": [
         2080,
         -120
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "leilao-telegram",
+          "name": "Bot do Telegram"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "parse_mode": "HTML",
+          "appendAttribution": false
+        }
+      },
+      "id": "responder-aviso-de-pergunta",
+      "name": "Responder aviso de pergunta",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        860,
+        -200
       ],
       "credentials": {
         "telegramApi": {
@@ -760,6 +797,11 @@
         ],
         [
           {
+            "node": "Aviso de pergunta",
+            "type": "main",
+            "index": 0
+          },
+          {
             "node": "Carregar ficha do chat",
             "type": "main",
             "index": 0
@@ -921,6 +963,17 @@
         [
           {
             "node": "Responder pergunta",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aviso de pergunta": {
+      "main": [
+        [
+          {
+            "node": "Responder aviso de pergunta",
             "type": "main",
             "index": 0
           }

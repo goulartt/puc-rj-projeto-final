@@ -1346,6 +1346,26 @@ return $input.all().map((entry) => ({
 }));
 """
 
+CHAT_QUESTION_ACK = CHAT_FORMAT_HELPERS + """
+// Aviso imediato de que a pergunta chegou.
+//
+// A resposta leva de quinze a trinta segundos no modelo local, e nesse
+// intervalo a conversa fica parada sem sinal nenhum. O mesmo problema do PDF,
+// em escala menor: sem retorno, a pessoa nao distingue "pensando" de "quebrou"
+// e reformula a pergunta, o que gera duas chamadas para uma duvida.
+//
+// So o caminho de pergunta passa por aqui. Recusa fora de escopo e comando sao
+// instantaneos, e avisar antes deles seria ruido.
+const asked = $input.all();
+if (!asked.length) return [];
+
+const chatId = asked[0].json.chat_id;
+return [{ json: { chat_id: chatId, text:
+  asked.length > 1
+    ? 'Recebi ' + asked.length + ' perguntas. Conferindo na ficha…'
+    : 'Deixa eu conferir na ficha do edital…' } }];
+"""
+
 CHAT_HELP = CHAT_FORMAT_HELPERS + """
 const chatId = $('Aplicar escopo').all()
   .filter((i) => i.json.route === 'help')[0].json.chat_id;
@@ -1674,6 +1694,14 @@ def build_chat() -> dict:
              {"jsCode": CHAT_ANSWER}),
 
         # ── ajuda, apagar, arquivo nao suportado ──
+        # A POSICAO IMPORTA. Com `executionOrder: v1`, o n8n resolve empates
+        # entre ramos pela coordenada do no — x primeiro, depois y, ambos
+        # crescentes. Este aviso precisa ficar antes de `Carregar ficha do
+        # chat` ([660, -120]) na ordem do canvas, senao ele sai DEPOIS da
+        # resposta e nao serve para nada. Ja aconteceu: com x=1060 o aviso
+        # chegava junto com a resposta pronta.
+        node("Aviso de pergunta", "n8n-nodes-base.code", 2, [660, -200],
+             {"jsCode": CHAT_QUESTION_ACK}),
         node("Texto de ajuda", "n8n-nodes-base.code", 2, [660, 100], {"jsCode": CHAT_HELP}),
         node("Apagar dados do chat", "n8n-nodes-base.postgres", 2.7, [660, 260], {
             "operation": "executeQuery",
@@ -1690,6 +1718,7 @@ def build_chat() -> dict:
         _telegram_send("Responder aviso", [880, -480]),
         _telegram_send("Responder ficha", [1480, -320]),
         _telegram_send("Responder pergunta", [2080, -120]),
+        _telegram_send("Responder aviso de pergunta", [860, -200]),
         _telegram_send("Responder ajuda", [880, 100]),
         _telegram_send("Responder exclusao", [1100, 260]),
         _telegram_send("Responder nao suportado", [1280, 420]),
@@ -1710,7 +1739,10 @@ def build_chat() -> dict:
             # antes de chegar ao Docling.
             [{"node": "Aviso de processamento", "type": "main", "index": 0},
              {"node": "Chamar ingestao", "type": "main", "index": 0}],
-            [{"node": "Carregar ficha do chat", "type": "main", "index": 0}],
+            # Aviso primeiro, consulta em paralelo. Em serie o no do Telegram
+            # substituiria o item e a pergunta se perderia.
+            [{"node": "Aviso de pergunta", "type": "main", "index": 0},
+             {"node": "Carregar ficha do chat", "type": "main", "index": 0}],
             [{"node": "Texto de ajuda", "type": "main", "index": 0}],
             [{"node": "Apagar dados do chat", "type": "main", "index": 0}],
             [{"node": "Arquivo nao suportado", "type": "main", "index": 0}],
@@ -1723,6 +1755,7 @@ def build_chat() -> dict:
                 "Buscar glossario",
                 "Preparar pergunta", "Perguntar ao modelo", "Resposta da pergunta",
                 "Responder pergunta"),
+        **chain("Aviso de pergunta", "Responder aviso de pergunta"),
         **chain("Texto de ajuda", "Responder ajuda"),
         **chain("Apagar dados do chat", "Confirmar exclusao", "Responder exclusao"),
         **chain("Arquivo nao suportado", "Responder nao suportado"),
