@@ -232,4 +232,21 @@ def test_present_traduz_as_lacunas() -> None:
 
 def test_ficha_vazia_nao_quebra() -> None:
     saida = presentation.present({})
-    assert saida == {"risks": [], "risks_generic_hidden": 0, "gaps": [], "highlights": []}
+    assert saida == {"warning": None, "risks": [], "risks_generic_hidden": 0,
+                     "gaps": [], "highlights": []}
+
+
+def test_aviso_de_edital_com_varios_imoveis() -> None:
+    """A ficha descreve um lote; sem o aviso ela e lida como se fosse do edital."""
+    saida = presentation.present(
+        {}, deterministic={"multi_lot": {"multi": True, "properties": 7}}
+    )
+    assert "7 imóveis" in saida["warning"]
+    assert "confira no PDF" in saida["warning"]
+
+
+def test_edital_de_um_imovel_nao_gera_aviso() -> None:
+    saida = presentation.present(
+        {}, deterministic={"multi_lot": {"multi": False, "properties": 1}}
+    )
+    assert saida["warning"] is None

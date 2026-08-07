@@ -75,7 +75,40 @@ def money(text: str) -> list[Found]:
 
 # ─── Datas ──────────────────────────────────────────────────────────────────
 
-_DATE = re.compile(r"\b(\d{2})/(\d{2})/(\d{4})\b")
+_MONTHS = {
+    "janeiro": 1, "fevereiro": 2, "marco": 3, "março": 3, "abril": 4,
+    "maio": 5, "junho": 6, "julho": 7, "agosto": 8, "setembro": 9,
+    "outubro": 10, "novembro": 11, "dezembro": 12,
+}
+_MONTH_NAMES = "|".join(_MONTHS)
+
+# Três grafias, todas vistas em editais reais:
+#   20/07/2026            numérica
+#   03/setembro/2026      mês por extenso no meio da barra
+#   21 de agosto de 2026  data inteira por extenso
+#
+# Cada uma das duas últimas custou as datas de praça de um edital inteiro: o
+# extrator devolvia lista vazia e nada sinalizava que havia falhado.
+_DATE = re.compile(
+    rf"\b(\d{{1,2}})/(\d{{2}}|{_MONTH_NAMES})/(\d{{4}})\b"
+    rf"|\b(\d{{1,2}})\s+de\s+({_MONTH_NAMES})\s+de\s+(\d{{4}})\b",
+    re.IGNORECASE,
+)
+
+
+def _date_parts(match: re.Match) -> tuple[str, int, str] | None:
+    """Normaliza os grupos das três grafias para (dia, mês, ano)."""
+    day, month, year = match.group(1), match.group(2), match.group(3)
+    if day is None:
+        day, month, year = match.group(4), match.group(5), match.group(6)
+    if month is None:
+        return None
+    number = _MONTHS.get(month.lower()) if not month.isdigit() else int(month)
+    if number is None or not (1 <= number <= 12):
+        return None
+    if not (1 <= int(day) <= 31):
+        return None
+    return day, number, year
 # Duas grafias, e a ordem importa: `10:11 horas` precisa ser tentada antes de
 # `14h00`, senão o segundo padrão casa o "11 h" de "10:11 h*oras*" e devolve
 # 11:00 para um leilão que começa às 10:11.
@@ -87,12 +120,13 @@ def dates(text: str) -> list[Found]:
     text = _flatten(text)
     out: list[Found] = []
     for match in _DATE.finditer(text):
-        day, month, year = match.groups()
-        if not (1 <= int(month) <= 12 and 1 <= int(day) <= 31):
+        parts = _date_parts(match)
+        if parts is None:
             continue
+        day, month, year = parts
         out.append(
             Found(
-                value=f"{year}-{month}-{day}",
+                value=f"{year}-{month:02d}-{int(day):02d}",
                 raw=match.group(0),
                 context=_context(text, *match.span()),
             )
@@ -110,10 +144,10 @@ def dates(text: str) -> list[Found]:
 _ORDINAL = "[ºª°o]?"
 
 _ROUND_LABELS = [
-    ("first", re.compile(rf"(1{_ORDINAL}|primeir[ao])\s*(leil[ãa]o|pra[çc]a|hasta)",
-                         re.IGNORECASE)),
-    ("second", re.compile(rf"(2{_ORDINAL}|segund[ao])\s*(leil[ãa]o|pra[çc]a|hasta)",
-                          re.IGNORECASE)),
+    ("first", re.compile(rf"(1{_ORDINAL}|primeir[ao])\s*(\(a\))?\s*"
+                         rf"(leil[ãa]o|pra[çc]a|hasta)", re.IGNORECASE)),
+    ("second", re.compile(rf"(2{_ORDINAL}|segund[ao])\s*(\(a\))?\s*"
+                          rf"(leil[ãa]o|pra[çc]a|hasta)", re.IGNORECASE)),
 ]
 
 
@@ -145,10 +179,13 @@ def auction_rounds(text: str) -> dict[str, list[dict]]:
         position, label = previous[-1]
         if match.start() - position > ROUND_PROXIMITY:
             continue
-        day, month, year = match.groups()
+        parts = _date_parts(match)
+        if parts is None:
+            continue
+        day, month, year = parts
         rounds[label].append(
             {
-                "date": f"{year}-{month}-{day}",
+                "date": f"{year}-{month:02d}-{int(day):02d}",
                 "raw": match.group(0),
                 "time": _time_after(text, match.end()),
                 "context": _context(text, *match.span()),
@@ -214,6 +251,44 @@ def property_registry(text: str) -> list[Found]:
             )
         )
     return out
+
+
+# ─── Quantos imóveis o edital cobre ─────────────────────────────────────────
+
+def count_properties(text: str) -> int:
+    """Quantos imóveis distintos o documento descreve.
+
+    Existe porque a ficha inteira — schema, chat, destaques — assume um edital,
+    um imóvel, e essa premissa é falsa com frequência. Em cinco editais reais,
+    **dois** cobriam vários: um extrajudicial com sete matrículas e um judicial
+    com dois leilões em datas diferentes.
+
+    O que acontecia sem esta contagem é pior que falhar: o modelo descrevia o
+    primeiro imóvel e a ficha era apresentada como se fosse *do* edital. Nada
+    indicava que havia outros seis. Alguém podia dar lance no lote errado
+    achando que tinha lido o documento.
+
+    A contagem é por matrícula, que é o identificador registral do imóvel. Um
+    edital com uma matrícula só é o caso simples; mais de uma exige aviso.
+    """
+    registries = {found.value for found in property_registry(text)}
+    return len(registries)
+
+
+def multi_lot(text: str) -> dict[str, Any]:
+    """Diz se o edital cobre mais de um imóvel.
+
+    A evidência é a contagem de matrículas distintas, e só ela. Uma primeira
+    versão também contava blocos de datas de praça, na ideia de pegar editais
+    com dois leilões sob a mesma matrícula — e marcava como multi-lote um
+    edital de um imóvel só, porque os rótulos `1º leilão` e `2º leilão` se
+    repetem ao longo do texto.
+
+    Aviso que aparece em todo edital deixa de ser aviso. Perder um caso é pior
+    que nada, mas é melhor que treinar a pessoa a ignorar a linha.
+    """
+    properties = count_properties(text)
+    return {"properties": properties, "multi": properties > 1}
 
 
 # ─── CPF e CNPJ ─────────────────────────────────────────────────────────────
@@ -340,4 +415,5 @@ def extract_all(text: str) -> dict[str, Any]:
         "cpf_count": len(docs["cpf"]),
         "cpf_masked": [d["masked"] for d in docs["cpf"]],
         "cnpj": [{"value": d["value"], "valid": d["valid"]} for d in docs["cnpj"]],
+        "multi_lot": multi_lot(text),
     }

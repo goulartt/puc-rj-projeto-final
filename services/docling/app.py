@@ -229,7 +229,11 @@ def present(payload: dict = Body(...)) -> JSONResponse:
 
     case = payload.get("case")
     max_items = int(payload.get("max_items") or 3)
-    return JSONResponse(presentation.present(ficha, case, max_items=max_items))
+    # O bloco determinístico traz a contagem de imóveis do documento, que a
+    # ficha não tem: ela descreve um lote e não sabe quantos existem.
+    deterministic = payload.get("deterministic")
+    return JSONResponse(presentation.present(ficha, case, max_items=max_items,
+                                             deterministic=deterministic))
 
 
 @app.post("/movements/analyze")

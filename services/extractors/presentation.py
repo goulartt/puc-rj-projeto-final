@@ -347,13 +347,27 @@ def _gap_about(ficha: dict, prefix: str) -> bool:
 
 # ─── Composição ─────────────────────────────────────────────────────────────
 
-def present(ficha: dict, case: dict | None = None, *, max_items: int = 3) -> dict:
+def present(ficha: dict, case: dict | None = None, *, max_items: int = 3,
+            deterministic: dict | None = None) -> dict:
     """Blocos prontos para exibição, já em português e já priorizados."""
     ficha = ficha or {}
     ranked = rank_risks(ficha.get("risks") or [])
     specific = [r for r in ranked if not is_generic_risk(r.get("description", ""))]
 
+    # Aviso de documento com vários imóveis. Vem antes de tudo na mensagem
+    # porque muda o sentido de tudo que vem depois: a ficha descreve um lote, e
+    # sem esta linha ela seria lida como se descrevesse o edital.
+    lots = (deterministic or {}).get("multi_lot") or {}
+    warning = None
+    if lots.get("multi"):
+        warning = (
+            f"Este edital cobre {lots['properties']} imóveis. A ficha abaixo "
+            "descreve apenas um deles — confira no PDF qual lote lhe interessa "
+            "antes de dar lance."
+        )
+
     return {
+        "warning": warning,
         "risks": [
             {"description": r.get("description"), "severity": r.get("severity")}
             for r in (specific or ranked)[:max_items]

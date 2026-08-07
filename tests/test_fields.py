@@ -102,6 +102,29 @@ def test_hora_com_dois_pontos() -> None:
     assert antigo["first"][0]["time"] == "14:00"
 
 
+def test_mes_por_extenso_no_meio_da_barra() -> None:
+    """`03/setembro/2026` — um edital inteiro perdia as datas de praça."""
+    rounds = fields.auction_rounds(
+        "terá início o 2º leilão, que encerrar-se-á em 03/setembro/2026, às 14:00hs"
+    )
+    assert [d["date"] for d in rounds["second"]] == ["2026-09-03"]
+
+
+def test_data_inteira_por_extenso() -> None:
+    """`Dia 21 de agosto de 2026`, e o rótulo escrito `PRIMEIRO(A) LEILÃO/PRAÇA`.
+
+    Duas variações no mesmo documento: a data sem nenhum número de mês e o
+    rótulo com o `(A)` que os editais usam para servir aos dois ritos.
+    """
+    rounds = fields.auction_rounds(
+        "PRIMEIRO(A) LEILÃO/PRAÇA:Dia 21 de agosto de 2026 às 09:30, que se "
+        "realizará na Local: Hotel Thomasi. SEGUNDO(A) LEILÃO/PRAÇA:Dia 28 de "
+        "agosto de 2026 às 09:30, no mesmo local."
+    )
+    assert [d["date"] for d in rounds["first"]] == ["2026-08-21"]
+    assert [d["date"] for d in rounds["second"]] == ["2026-08-28"]
+
+
 def test_data_invalida_e_descartada() -> None:
     assert fields.dates("prazo de 45/13/2026") == []
 
@@ -136,6 +159,37 @@ def test_edital_com_as_duas_matriculas_devolve_so_a_do_imovel() -> None:
         "O bem é objeto da matrícula nº 106.233 do 4º Cartório de Registro de Imóveis."
     )
     assert [a.value for a in fields.property_registry(texto)] == ["106.233"]
+
+
+# ─── Edital com mais de um imóvel ───────────────────────────────────────────
+
+def test_edital_de_um_imovel_nao_e_multi_lote() -> None:
+    """Falso positivo aqui e pior que falso negativo: um aviso que aparece em
+    todo edital treina a pessoa a ignorar a linha."""
+    texto = "objeto da matrícula nº 106.233 do 4º Cartório de Registro de Imóveis"
+    assert fields.multi_lot(texto)["multi"] is False
+
+
+def test_varias_matriculas_disparam_o_aviso() -> None:
+    """Um edital extrajudicial real trazia sete imoveis, e a ficha descrevia um.
+
+    Nada indicava que havia outros seis — alguem podia dar lance no lote errado
+    achando que tinha lido o documento.
+    """
+    texto = (
+        "Lote 1: Matrícula nº 81.909 do 1º Serviço de Registro de Imóveis. "
+        "Lote 2: Matrícula nº 82.003 do 1º Serviço de Registro de Imóveis. "
+        "Lote 3: Matrícula nº 7.195 do Cartório de Registro de Imóveis."
+    )
+    resultado = fields.multi_lot(texto)
+    assert resultado["multi"] is True
+    assert resultado["properties"] == 3
+
+
+def test_a_mesma_matricula_repetida_nao_e_multi_lote() -> None:
+    texto = ("matrícula nº 106.233 do Registro de Imóveis; "
+             "conforme a matrícula nº 106.233 do Registro de Imóveis")
+    assert fields.multi_lot(texto)["properties"] == 1
 
 
 # ─── CPF e CNPJ ─────────────────────────────────────────────────────────────

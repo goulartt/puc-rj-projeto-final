@@ -1503,7 +1503,11 @@ const occupancy = {
 
 const appraisal = a.appraisal || {};
 
-const out = [
+const out = [];
+// O aviso de multiplos imoveis vem antes de tudo: ele muda o sentido de tudo
+// que vem depois, porque a ficha descreve um lote e nao o edital.
+if (view.warning) out.push('⚠️ ' + bold(esc(view.warning)), '');
+out.push(
   bold('Ficha do edital') + ' — ' + esc(routed.file_name || 'documento'),
   '',
   line('Imovel', ((a.property || {}).type || {}).value),
@@ -1513,7 +1517,10 @@ const out = [
   line('Ocupacao', occupancy),
   line('Processo', (a.court_case || {}).number),
   '',
-].filter((l) => l !== null);
+);
+const filtered = out.filter((l) => l !== null);
+out.length = 0;
+out.push(...filtered);
 
 // Favoravel antes de risco: quem le tres linhas de alerta e nada em contrario
 // conclui que o lote e ruim, mesmo quando o edital nao diz isso. Sao fatos do
@@ -1635,6 +1642,8 @@ def build_chat() -> dict:
             "sendBody": True, "specifyBody": "json",
             "jsonBody": ("={{ JSON.stringify({ "
                          "ficha: ($('Chamar ingestao').first().json.analysis || {}), "
+                         "deterministic: ($('Chamar ingestao').first().json.deterministic "
+                         "|| null), "
                          "case: ($json.case_analysis || null) }) }}"),
             "options": {"timeout": 30000}}),
         node("Resposta da ficha", "n8n-nodes-base.code", 2, [1280, -320],
