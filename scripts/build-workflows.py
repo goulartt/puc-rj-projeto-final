@@ -512,9 +512,9 @@ if (!/^-?[0-9]+$/.test(chatId)) return [];
 const pages = conversion.pages;
 const NL = String.fromCharCode(10);
 return [{ json: { chat_id: chatId, text:
-  'Documento lido' + (pages ? ' — ' + pages + (pages === 1 ? ' pagina' : ' paginas') : '') +
+  'Documento lido' + (pages ? ' — ' + pages + (pages === 1 ? ' página' : ' páginas') : '') +
   '.' + NL + NL +
-  'Agora estou extraindo prazos, valores, onus e debitos, e conferindo cada um ' +
+  'Agora estou extraindo prazos, valores, ônus e débitos, e conferindo cada um ' +
   'contra o texto. Essa parte leva cerca de dois minutos.' } }];
 """
 
@@ -1415,20 +1415,20 @@ const NL = String.fromCharCode(10);
 const linhas = [];
 
 if (lots.length > 1) {
-  linhas.push(bold('Este edital cobre ' + lots.length + ' imoveis.') +
-              ' Qual deles voce quer analisar?', '');
+  linhas.push(bold('Este edital cobre ' + lots.length + ' imóveis.') +
+              ' Qual deles você quer analisar?', '');
   options.forEach((o, i) => linhas.push((i + 1) + '. ' + esc(o)));
-  linhas.push('', 'Responda com o numero ou com a matricula.');
+  linhas.push('', 'Responda com o número ou com a matrícula.');
 } else if (lots.length === 1) {
-  linhas.push(bold('Encontrei este imovel no edital:'), '',
+  linhas.push(bold('Encontrei este imóvel no edital:'), '',
               esc(options[0] || 'imovel'), '',
-              'E esse que voce quer analisar? Responda ' + bold('sim') +
+              'É esse que você quer analisar? Responda ' + bold('sim') +
               ' para eu montar a ficha.');
 } else {
   // Sem matricula legivel nao da para listar, mas da para seguir: a extracao
   // funciona igual, so nao ha o que confirmar.
   linhas.push(bold('Recebi o edital') + ' — ' + esc(prepared.file_name || 'documento') +
-              '.', '', 'Nao consegui identificar a matricula do imovel no texto. ' +
+              '.', '', 'Não consegui identificar a matrícula do imóvel no texto. ' +
               'Responda ' + bold('sim') + ' para eu analisar o documento assim mesmo.');
 }
 
@@ -1447,9 +1447,9 @@ if (!verdict.understood) {
   const opcoes = (verdict.options || [])
     .map((o, i) => (i + 1) + '. ' + esc(o)).join(NL);
   const pedido = (pending.lots || []).length > 1
-    ? 'Nao entendi qual imovel voce quer.' + NL + NL + opcoes + NL + NL +
-      'Responda com o numero ou com a matricula.'
-    : 'Responda ' + bold('sim') + ' para eu analisar este imovel.';
+    ? 'Não entendi qual imóvel você quer.' + NL + NL + opcoes + NL + NL +
+      'Responda com o número ou com a matrícula.'
+    : 'Responda ' + bold('sim') + ' para eu analisar este imóvel.';
   return [{ json: { proceed: false, chat_id: routed.chat_id, text: pedido } }];
 }
 
@@ -1496,27 +1496,27 @@ const chatId = $('Aplicar escopo').all()
 // um sistema automatizado, o que acontece com o PDF que ela enviar, e como
 // apagar. Esta em docs/privacy.md e aparece no primeiro contato.
 const text = [
-  bold('Arremata AI') + ' — assistente para editais de leilao de imovel.',
+  bold('Arremata AI') + ' — assistente para editais de leilão de imóvel.',
   '',
-  'Sou um sistema automatizado, ' + bold('nao sou advogado') + ' e nao substituo analise',
-  'juridica. Explico termos, prazos e riscos do edital, e mostro de onde',
+  'Sou um sistema automatizado, ' + bold('não sou advogado') + ' e não substituo análise',
+  'jurídica. Explico termos, prazos e riscos do edital, e mostro de onde',
   'tirei cada resposta.',
   '',
   bold('Como usar'),
-  'Envie o PDF do edital e eu monto uma ficha com prazos, valores, onus,',
-  'debitos e o que o documento <i>nao</i> informa. Depois pergunte o que quiser',
-  'sobre ele, em portugues normal. Sem edital carregado, respondo duvidas',
-  'gerais de leilao.',
+  'Envie o PDF do edital e eu monto uma ficha com prazos, valores, ônus,',
+  'débitos e o que o documento <i>não</i> informa. Depois pergunte o que quiser',
+  'sobre ele, em português normal. Sem edital carregado, respondo dúvidas',
+  'gerais de leilão.',
   '',
-  bold('O que faco com seus dados'),
+  bold('O que faço com seus dados'),
   'Guardo o texto do edital e a ficha para responder suas perguntas. A',
-  'extracao usa um modelo de terceiro. CPF que apareca no documento e',
+  'extração usa um modelo de terceiro. CPF que apareça no documento é',
   'mascarado antes de qualquer coisa ser gravada.',
   'Use /apagar para remover tudo desta conversa.',
   '',
-  bold('O que nao faco'),
-  'Nao digo se vale a pena arrematar, nao estimo valor de mercado e nao dou',
-  'orientacao juridica.',
+  bold('O que não faço'),
+  'Não digo se vale a pena arrematar, não estimo valor de mercado e não dou',
+  'orientação jurídica.',
 ].join(String.fromCharCode(10));
 
 return [{ json: { chat_id: chatId, text } }];
@@ -1584,10 +1584,10 @@ return $input.all().map((item, index) => {
   const gateway = item.json;
   let text;
   if (gateway.blocked) {
-    text = esc('Nao consegui responder agora: ' + (gateway.reason || 'limite de uso atingido') +
+    text = esc('Não consegui responder agora: ' + (gateway.reason || 'limite de uso atingido') +
                '. Tente de novo mais tarde.');
   } else if (!gateway.text) {
-    text = 'Nao consegui formular uma resposta para isso. Pode reformular a pergunta?';
+    text = 'Não consegui formular uma resposta para isso. Pode reformular a pergunta?';
   } else {
     // O modelo escreve em Markdown; sem converter, apareceria `**assim**`.
     text = fromMarkdown(gateway.text);
@@ -1610,7 +1610,7 @@ return [{ json: { chat_id: routed.chat_id, text: [
   'Recebi o edital' + (routed.file_name ? ' — ' + esc(routed.file_name) : '') + '.',
   '',
   'Estou lendo o documento e montando a ficha. Costuma levar de dois a cinco',
-  'minutos, dependendo do tamanho. Aviso aqui quando terminar; nao precisa',
+  'minutos, dependendo do tamanho. Aviso aqui quando terminar; não precisa',
   'reenviar.',
 ].join(String.fromCharCode(10)) } }];
 """
@@ -1630,7 +1630,7 @@ const NL = String.fromCharCode(10);
 if (!result.ok) {
   const problems = (result.problems || []).join('; ');
   return [{ json: { chat_id: routed.chat_id, text:
-    'Nao consegui analisar este edital.' + NL + NL + esc(problems || 'causa desconhecida') +
+    'Não consegui analisar este edital.' + NL + NL + esc(problems || 'causa desconhecida') +
     NL + NL + 'Se o PDF for digitalizado, a leitura pode falhar. Tente outro arquivo.' } }];
 }
 
@@ -1640,7 +1640,7 @@ const brl = (n) => (n == null ? null
 const line = (label, value) => (value ? bold(label + ':') + ' ' + esc(value) : null);
 
 const occupancy = {
-  occupied: 'ocupado', vacant: 'desocupado', not_informed: 'NAO INFORMADO no edital',
+  occupied: 'ocupado', vacant: 'desocupado', not_informed: 'NÃO INFORMADO no edital',
 }[((a.occupancy || {}).status || {}).value || (a.occupancy || {}).status] || null;
 
 const appraisal = a.appraisal || {};
@@ -1656,11 +1656,11 @@ if (view.warning) {
 out.push(
   bold('Ficha do edital') + ' — ' + esc(routed.file_name || 'documento'),
   '',
-  line('Imovel', ((a.property || {}).type || {}).value),
-  line('Matricula', ((a.property || {}).registry_number || {}).value),
-  line('Avaliacao', brl((appraisal.updated_value || {}).amount_brl
+  line('Imóvel', ((a.property || {}).type || {}).value),
+  line('Matrícula', ((a.property || {}).registry_number || {}).value),
+  line('Avaliação', brl((appraisal.updated_value || {}).amount_brl
        || (appraisal.value || {}).amount_brl)),
-  line('Ocupacao', occupancy),
+  line('Ocupação', occupancy),
   line('Processo', (a.court_case || {}).number),
   '',
 );
@@ -1677,22 +1677,22 @@ if ((view.highlights || []).length) {
   out.push('');
 }
 if ((view.risks || []).length) {
-  out.push(bold('Pontos de atencao'));
+  out.push(bold('Pontos de atenção'));
   view.risks.forEach((r) => out.push('• ' + esc(r.description)));
   if (view.risks_generic_hidden) {
     out.push('<i>(' + view.risks_generic_hidden + ' aviso' +
              (view.risks_generic_hidden > 1 ? 's' : '') +
-             ' padrao de leilao omitido' + (view.risks_generic_hidden > 1 ? 's' : '') +
+             ' padrão de leilão omitido' + (view.risks_generic_hidden > 1 ? 's' : '') +
              ' — pergunte se quiser ver)</i>');
   }
   out.push('');
 }
 if ((view.gaps || []).length) {
-  out.push(bold('O que o edital NAO informa'));
+  out.push(bold('O que o edital NÃO informa'));
   view.gaps.forEach((g) => out.push('• ' + bold(g.label) + ' — ' + esc(g.why_it_matters)));
   out.push('');
 }
-out.push('Pergunte o que quiser sobre este edital. Nao sou advogado e nao digo se',
+out.push('Pergunte o que quiser sobre este edital. Não sou advogado e não digo se',
          'vale a pena arrematar.');
 
 return [{ json: { chat_id: routed.chat_id, text: fit(out.join(NL)) } }];
@@ -1704,7 +1704,7 @@ const routed = $('Aplicar escopo').all()
 const NL = String.fromCharCode(10);
 return [{ json: { chat_id: routed.chat_id, text:
   'Pronto. Apaguei os editais e as fichas desta conversa.' + NL + NL +
-  'Envie um novo PDF quando quiser comecar de novo.' } }];
+  'Envie um novo PDF quando quiser começar de novo.' } }];
 """
 
 CHAT_UNSUPPORTED = CHAT_FORMAT_HELPERS + """
@@ -1712,15 +1712,15 @@ const NL = String.fromCharCode(10);
 
 // Cada tipo tem um conserto diferente, e dizer qual poupa uma tentativa.
 const CONSERTO = {
-  foto: 'Foto de documento eu nao consigo ler. Reenvie o arquivo pelo clipe, ' +
+  foto: 'Foto de documento eu não consigo ler. Reenvie o arquivo pelo clipe, ' +
         'escolhendo ' + bold('Arquivo') + ' em vez de ' + bold('Galeria') + '.',
   arquivo: (r) => 'Recebi ' + esc(r.attachment_name || 'um arquivo') +
-                  ', que nao e PDF. Envie o edital em PDF.',
-  video: 'Nao leio video.',
-  audio: 'Nao entendo audio — sou so texto por enquanto.',
-  figurinha: 'Bonita, mas nao da para analisar.',
-  localizacao: 'Localizacao nao me diz nada sobre o leilao.',
-  contato: 'Nao faco nada com contato.',
+                  ', que não é PDF. Envie o edital em PDF.',
+  video: 'Não leio vídeo.',
+  audio: 'Não entendo áudio — sou só texto por enquanto.',
+  figurinha: 'Bonita, mas não dá para analisar.',
+  localizacao: 'Localização não me diz nada sobre o leilão.',
+  contato: 'Não faço nada com contato.',
 };
 
 return $('Resolver pendente').all()
@@ -1729,10 +1729,10 @@ return $('Resolver pendente').all()
     const routed = entry.json;
     const conserto = typeof CONSERTO[routed.attachment] === 'function'
       ? CONSERTO[routed.attachment](routed)
-      : (CONSERTO[routed.attachment] || 'So consigo ler edital em PDF.');
+      : (CONSERTO[routed.attachment] || 'Só consigo ler edital em PDF.');
     return { json: { chat_id: routed.chat_id, text:
       conserto + NL + NL +
-      'Envie o PDF do edital, ou use /ajuda para ver o que eu faco.' } };
+      'Envie o PDF do edital, ou use /ajuda para ver o que eu faço.' } };
   });
 """
 

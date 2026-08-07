@@ -152,6 +152,45 @@ def test_so_ha_generico_entao_mostra_o_generico() -> None:
     assert len(presentation.present(ficha)["risks"]) == 1
 
 
+def test_entrada_de_25_por_cento_e_pratica_comum() -> None:
+    """O art. 895 do CPC permite, e por isso aparece em quase todo edital.
+
+    Descrever "exige disponibilidade de capital" como risco do lote é descrever
+    o leilão, não este imóvel.
+    """
+    assert presentation.is_generic_risk(
+        "Pagamento integral no ato, com possibilidade de parcelamento apenas "
+        "com 25% de entrada, o que exige disponibilidade de capital"
+    ) is True
+
+
+def test_condicao_de_pagamento_especifica_nao_e_generica() -> None:
+    """Nem toda cláusula de pagamento é padrão — esta é do lote."""
+    assert presentation.is_generic_risk(
+        "O saldo devedor fiduciário de R$ 1.218.001,56 é de responsabilidade "
+        "do arrematante e deve ser quitado para a transmissão da propriedade"
+    ) is False
+
+
+# ─── Lacunas que a matrícula responde ───────────────────────────────────────
+
+def test_area_privativa_nao_ocupa_o_resumo() -> None:
+    """Consta da matrícula, que o comprador puxa antes de dar lance."""
+    ficha = {"gaps": [
+        {"field": "private_area_m2", "why_it_matters": "não informada"},
+        {"field": "occupancy.status", "why_it_matters": "afeta custo e prazo"},
+        {"field": "debts.enforced_claim", "why_it_matters": "valor não explicitado"},
+    ]}
+    rotulos = [g["label"] for g in presentation.present(ficha)["gaps"]]
+    assert rotulos == ["Se o imóvel está ocupado", "Valor cobrado na execução"]
+
+
+def test_so_ha_lacuna_de_baixo_valor_entao_mostra() -> None:
+    """Seção vazia sugeriria que o edital informa tudo, o que é pior."""
+    ficha = {"gaps": [{"field": "private_area_m2", "why_it_matters": "não informada"}]}
+    assert len(presentation.present(ficha)["gaps"]) == 1
+
+
 # ─── Fatos favoráveis ───────────────────────────────────────────────────────
 
 def test_desagio_na_segunda_praca() -> None:

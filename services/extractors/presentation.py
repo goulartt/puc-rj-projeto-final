@@ -218,9 +218,36 @@ _GENERIC_RISK = re.compile(
     r"|no estado em que se encontra"
     r"|ad corpus"
     r"|desist[êe]ncia (do |da )?arremata"
-    r"|multa por inadimpl",
+    r"|multa por inadimpl"
+    # Entrada de 25% com o restante parcelado é o que o art. 895 do CPC
+    # permite, e por isso aparece em quase todo edital judicial. Descrever
+    # "exige disponibilidade de capital" como risco do lote é descrever o
+    # leilão, não este imóvel.
+    r"|(25|vinte e cinco)\s*%.{0,40}(entrada|[àa] vista)"
+    r"|(entrada|sinal).{0,40}(25|vinte e cinco)\s*%"
+    r"|parcelad[oa].{0,60}(30|trinta) (meses|parcelas)"
+    r"|disponibilidade de capital",
     re.IGNORECASE,
 )
+
+# Lacunas que o edital de fato não traz e que ninguém precisa que ele traga:
+# são dados de outra fonte, mais confiável e de acesso direto. Listá-las gasta
+# uma das três linhas do resumo com uma pendência que não é pendência.
+#
+# Área privativa é o exemplo: consta da matrícula, que o comprador vai puxar de
+# qualquer forma antes de dar lance.
+_LOW_VALUE_GAPS = re.compile(
+    r"private_area|area privativa|área privativa"
+    r"|total_area|area total|área total"
+    r"|municipal_id|inscri[çc][ãa]o municipal"
+    r"|parking|vaga de garagem",
+    re.IGNORECASE,
+)
+
+
+def is_low_value_gap(field: str, label: str = "") -> bool:
+    """Lacuna que a matrícula responde melhor que o edital."""
+    return bool(_LOW_VALUE_GAPS.search(f"{field or ''} {label or ''}"))
 
 
 def is_generic_risk(description: str) -> bool:
@@ -367,6 +394,27 @@ def describe_lots(lots: list[dict]) -> list[str]:
 
 # ─── Composição ─────────────────────────────────────────────────────────────
 
+def _rank_gaps(gaps: list[dict], max_items: int) -> list[dict]:
+    """Lacunas do resumo, com as de baixo valor no fim.
+
+    Não são descartadas — seguem na ficha. O que muda é quem ocupa as três
+    linhas: "o edital não diz se está ocupado" e "não informa a área privativa"
+    não têm o mesmo peso, e listar as duas lado a lado sugere que têm.
+    """
+    described = [
+        {"label": label(g.get("field")),
+         "why_it_matters": g.get("why_it_matters"),
+         "how_to_verify": g.get("how_to_verify"),
+         "field": g.get("field")}
+        for g in gaps
+    ]
+    ranked = sorted(described,
+                    key=lambda g: is_low_value_gap(g["field"], g["label"]))
+    relevant = [g for g in ranked if not is_low_value_gap(g["field"], g["label"])]
+    chosen = (relevant or ranked)[:max_items]
+    return [{k: v for k, v in g.items() if k != "field"} for g in chosen]
+
+
 def present(ficha: dict, case: dict | None = None, *, max_items: int = 3,
             deterministic: dict | None = None) -> dict:
     """Blocos prontos para exibição, já em português e já priorizados."""
@@ -399,11 +447,6 @@ def present(ficha: dict, case: dict | None = None, *, max_items: int = 3,
             for r in (specific or ranked)[:max_items]
         ],
         "risks_generic_hidden": len(ranked) - len(specific) if specific else 0,
-        "gaps": [
-            {"label": label(g.get("field")),
-             "why_it_matters": g.get("why_it_matters"),
-             "how_to_verify": g.get("how_to_verify")}
-            for g in (ficha.get("gaps") or [])[:max_items]
-        ],
+        "gaps": _rank_gaps(ficha.get("gaps") or [], max_items),
         "highlights": highlights(ficha, case)[:max_items],
     }

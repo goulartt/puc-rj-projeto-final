@@ -34,9 +34,9 @@ RULES: list[dict[str, Any]] = [
             r"|(vale|valeria) o investimento"
         ),
         "reply": (
-            "Nao consigo dizer se vale a pena — isso depende do seu objetivo e de "
-            "valores que o edital nao traz.\n\n"
-            "O que da para fazer e listar os custos que o edital menciona e o que "
+            "Não consigo dizer se vale a pena — isso depende do seu objetivo e de "
+            "valores que o edital não traz.\n\n"
+            "O que dá para fazer é listar os custos que o edital menciona e o que "
             "ele deixa em aberto. Quer?"
         ),
     },
@@ -49,9 +49,9 @@ RULES: list[dict[str, Any]] = [
             r"|quanto (vale|custa) (esse |este |o )?(imovel|apartamento|bem) hoje"
         ),
         "reply": (
-            "Nao estimo valor de mercado nem projeto valorizacao — o edital nao "
-            "traz essa informacao e eu nao tenho como apura-la.\n\n"
-            "Posso mostrar a avaliacao judicial e o lance minimo de cada praca, "
+            "Não estimo valor de mercado nem projeto valorização — o edital não "
+            "traz essa informação e eu não tenho como apurá-la.\n\n"
+            "Posso mostrar a avaliação judicial e o lance mínimo de cada praça, "
             "que constam do documento."
         ),
     },
@@ -63,9 +63,9 @@ RULES: list[dict[str, Any]] = [
             r"|(qual|preciso de) advogado|como (eu )?processo"
         ),
         "reply": (
-            "Nao dou orientacao juridica nem digo o que voce deve fazer legalmente. "
+            "Não dou orientação jurídica nem digo o que você deve fazer legalmente. "
             "Para isso procure um advogado.\n\n"
-            "O que posso fazer e explicar o que o edital diz sobre riscos, prazos e "
+            "O que posso fazer é explicar o que o edital diz sobre riscos, prazos e "
             "responsabilidades do arrematante."
         ),
     },
