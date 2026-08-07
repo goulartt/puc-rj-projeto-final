@@ -69,6 +69,39 @@ def test_data_distante_do_rotulo_nao_entra_na_praca() -> None:
     assert "2016-07-13" not in [d["date"] for d in rounds["second"]]
 
 
+def test_sinal_de_grau_no_lugar_do_indicador_ordinal() -> None:
+    """`1° leilão` com U+00B0, e não `1º` com U+00BA.
+
+    Os dois são visualmente idênticos e os editais usam ambos sem critério. Um
+    edital real escrito assim devolvia lista vazia: o extrator não achava nada
+    e nada indicava que algo tinha falhado — o silêncio é o que torna esse tipo
+    de defeito caro.
+    """
+    texto = (
+        "Do início e encerramento do Leilão: Início do 1° leilão em 28/08/2026 às "
+        "10:11 horas e encerramento do 1° leilão em 31/08/2026 às 10:11 horas, em "
+        "não havendo lance igual ou superior à avaliação, seguir-se-á sem "
+        "interrupção o 2° leilão que se encerrará em 15/09/2026 às 10:11 horas."
+    )
+    rounds = fields.auction_rounds(texto)
+    assert [d["date"] for d in rounds["first"]] == ["2026-08-28", "2026-08-31"]
+    assert [d["date"] for d in rounds["second"]] == ["2026-09-15"]
+
+
+def test_hora_com_dois_pontos() -> None:
+    """`10:11 horas` — o padrão de `14h00` casava o "11 h" de "10:11 horas".
+
+    O resultado era 11:00 para um leilão que começa às 10:11: hora errada, sem
+    erro nenhum. Uma hora plausível e errada é pior que hora ausente.
+    """
+    rounds = fields.auction_rounds("Início do 1° leilão em 28/08/2026 às 10:11 horas.")
+    assert rounds["first"][0]["time"] == "10:11"
+
+    # A grafia antiga continua valendo.
+    antigo = fields.auction_rounds("1º Leilão início no dia 20/07/2026 às 14h00")
+    assert antigo["first"][0]["time"] == "14:00"
+
+
 def test_data_invalida_e_descartada() -> None:
     assert fields.dates("prazo de 45/13/2026") == []
 

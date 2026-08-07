@@ -76,7 +76,10 @@ def money(text: str) -> list[Found]:
 # ─── Datas ──────────────────────────────────────────────────────────────────
 
 _DATE = re.compile(r"\b(\d{2})/(\d{2})/(\d{4})\b")
-_TIME_NEARBY = re.compile(r"(\d{1,2})\s*h\s*(\d{2})?")
+# Duas grafias, e a ordem importa: `10:11 horas` precisa ser tentada antes de
+# `14h00`, senão o segundo padrão casa o "11 h" de "10:11 h*oras*" e devolve
+# 11:00 para um leilão que começa às 10:11.
+_TIME_NEARBY = re.compile(r"(\d{1,2})\s*:\s*(\d{2})|(\d{1,2})\s*h\s*(\d{2})?")
 
 
 def dates(text: str) -> list[Found]:
@@ -99,9 +102,18 @@ def dates(text: str) -> list[Found]:
 
 # Rótulo da praça e as formas que aparecem em edital. `1º Leilão`, `1ª praça` e
 # `primeira praça` significam a mesma coisa.
+#
+# `°` (sinal de grau, U+00B0) entra junto de `º` (indicador ordinal, U+00BA)
+# porque são visualmente idênticos e os editais usam os dois sem critério. Um
+# edital real escrito com `1° leilão` fez a extração de praças devolver lista
+# vazia — o extrator não achava nada e nada indicava que algo tinha falhado.
+_ORDINAL = "[ºª°o]?"
+
 _ROUND_LABELS = [
-    ("first", re.compile(r"(1[ºªo]?|primeir[ao])\s*(leil[ãa]o|pra[çc]a|hasta)", re.IGNORECASE)),
-    ("second", re.compile(r"(2[ºªo]?|segund[ao])\s*(leil[ãa]o|pra[çc]a|hasta)", re.IGNORECASE)),
+    ("first", re.compile(rf"(1{_ORDINAL}|primeir[ao])\s*(leil[ãa]o|pra[çc]a|hasta)",
+                         re.IGNORECASE)),
+    ("second", re.compile(rf"(2{_ORDINAL}|segund[ao])\s*(leil[ãa]o|pra[çc]a|hasta)",
+                          re.IGNORECASE)),
 ]
 
 
@@ -151,7 +163,10 @@ def _time_after(text: str, position: int) -> str | None:
     match = _TIME_NEARBY.search(window)
     if not match:
         return None
-    hour, minute = match.group(1), match.group(2) or "00"
+    if match.group(1) is not None:
+        hour, minute = match.group(1), match.group(2)
+    else:
+        hour, minute = match.group(3), match.group(4) or "00"
     return f"{int(hour):02d}:{minute}"
 
 

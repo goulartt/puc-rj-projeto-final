@@ -210,36 +210,34 @@ def eval_cnj(cases: dict) -> dict[str, Any]:
 # Cada linha compara o mesmo fato visto por dois caminhos independentes: a
 # regex sobre o Markdown e o modelo lendo o edital. Onde discordam, a ficha
 # deveria trazer `confidence: low`.
+# Cada linha compara o mesmo fato por dois caminhos independentes. A conferência
+# é de **pertencimento**, e não de igualdade posicional: o valor que o modelo
+# afirmou está entre os que a regex encontrou no documento?
+#
+# A primeira versão comparava contra números fixos do edital de exemplo —
+# `772545.0`, `800933.79` — e por isso reprovava qualquer outro documento por
+# construção. Um avaliador que só funciona no caso que ele foi escrito para
+# medir não é um avaliador.
 AGREEMENT_FIELDS = [
-    ("processo", lambda d: (d.get("court_case") or {}).get("number"),
+    ("processo",
+     lambda d: {(d.get("court_case") or {}).get("number")},
      lambda f: (f.get("court_case") or {}).get("number")),
-    ("matricula", lambda d: _first(d.get("property_registry"), "value"),
+    ("matricula",
+     lambda d: {m["value"] for m in d.get("property_registry", [])},
      lambda f: ((f.get("property") or {}).get("registry_number") or {}).get("value")),
-    ("avaliacao", lambda d: _money_in(d, 772545.0),
+    ("avaliacao",
+     lambda d: {m["value"] for m in d.get("money", [])},
      lambda f: (((f.get("appraisal") or {}).get("value")) or {}).get("amount_brl")),
-    ("avaliacao_atualizada", lambda d: _money_in(d, 800933.79),
+    ("avaliacao_atualizada",
+     lambda d: {m["value"] for m in d.get("money", [])},
      lambda f: (((f.get("appraisal") or {}).get("updated_value")) or {}).get("amount_brl")),
-    ("primeira_praca", lambda d: _round_date(d, "first", 0),
+    ("primeira_praca",
+     lambda d: {x["date"] for x in d.get("auction_rounds", {}).get("first", [])},
      lambda f: _date_of(((f.get("auction") or {}).get("first_round") or {}).get("starts_at"))),
-    ("segunda_praca_fim", lambda d: _round_date(d, "second", -1),
+    ("segunda_praca_fim",
+     lambda d: {x["date"] for x in d.get("auction_rounds", {}).get("second", [])},
      lambda f: _date_of(((f.get("auction") or {}).get("second_round") or {}).get("ends_at"))),
 ]
-
-
-def _first(items: list | None, key: str) -> Any:
-    return items[0][key] if items else None
-
-
-def _money_in(deterministic: dict, target: float) -> float | None:
-    """O valor está entre os que a regex achou? Ordem no documento não é fixa,
-    então a comparação é de pertencimento, não de posição."""
-    values = [m["value"] for m in deterministic.get("money", [])]
-    return target if target in values else (values[0] if values else None)
-
-
-def _round_date(deterministic: dict, which: str, index: int) -> str | None:
-    dates = deterministic.get("auction_rounds", {}).get(which, [])
-    return dates[index]["date"] if dates else None
 
 
 def _date_of(timestamp: str | None) -> str | None:
@@ -255,15 +253,28 @@ def eval_agreement(markdown: str, ficha: dict) -> dict[str, Any]:
 
     rows: list[dict] = []
     agree = 0
-    for name, from_deterministic, from_model in AGREEMENT_FIELDS:
-        left = from_deterministic(deterministic)
-        right = from_model(ficha)
-        same = _equivalent(left, right)
-        agree += bool(same)
-        rows.append({"field": name, "deterministic": left, "model": right, "agree": same})
+    checked = 0
+    for name, regex_set, from_model in AGREEMENT_FIELDS:
+        claimed = from_model(ficha)
+        # Sem afirmação do modelo não há o que conferir. Contar isso como
+        # divergência puniria o comportamento correto: nem todo edital tem
+        # avaliação atualizada, e inventar uma seria o defeito de verdade. A
+        # ausência já é registrada em `gaps`, que é onde ela pertence.
+        if claimed is None:
+            rows.append({"field": name, "deterministic": None, "model": None,
+                         "agree": None})
+            continue
 
-    return {"rate": _rate(agree, len(AGREEMENT_FIELDS)), "hits": agree,
-            "total": len(AGREEMENT_FIELDS), "rows": rows}
+        found = {v for v in regex_set(deterministic) if v is not None}
+        same = any(_equivalent(v, claimed) for v in found)
+        checked += 1
+        agree += bool(same)
+        rows.append({"field": name,
+                     "deterministic": sorted(map(str, found))[:4] or None,
+                     "model": claimed, "agree": same})
+
+    return {"rate": _rate(agree, checked), "hits": agree, "total": checked,
+            "rows": rows}
 
 
 def _equivalent(left: Any, right: Any) -> bool:
@@ -447,8 +458,9 @@ def render(report: dict) -> str:
         lines += ["", "## Determinístico × modelo, campo a campo", "",
                   "| Campo | Regex | Modelo | |", "|---|---|---|---|"]
         for row in report["agreement"]["rows"]:
+            mark = "—" if row["agree"] is None else ("✓" if row["agree"] else "✗")
             lines.append(f"| {row['field']} | `{row['deterministic']}` | "
-                         f"`{row['model']}` | {'✓' if row['agree'] else '✗'} |")
+                         f"`{row['model']}` | {mark} |")
 
     if report.get("citations", {}).get("misses"):
         lines += ["", "## Citações não localizadas no edital", "",

@@ -35,12 +35,26 @@ promessa central do projeto medida diretamente.
 camada: as perguntas de recusa vão sem o filtro na frente, de propósito, para
 saber quanto o prompt sozinho seguraria.
 
+## Corpus
+
+`python3 scripts/eval-corpus.py --out docs/evidence/` avalia **todos** os
+editais que o pipeline já processou, lendo o Markdown e a ficha do banco — o
+que o usuário de fato recebeu. Para acrescentar um edital, basta mandá-lo ao
+bot e rodar o script.
+
+O `chat_id` do Telegram identifica uma pessoa e o relatório vai versionado, por
+isso ele nunca é escrito: o script grava só um apelido derivado por hash.
+
+O segundo edital pagou o custo do script na primeira execução, encontrando dois
+defeitos que um documento só jamais mostraria — ver
+[`evidence/2026-08-07-avaliacao-corpus.md`](evidence/2026-08-07-avaliacao-corpus.md).
+
 ## O que os números não dizem
 
-**Um edital.** Todas as medidas de extração e citação vêm de um único documento
-(TJSP, execução de condomínio). Um edital de alienação fiduciária, um de outro
-tribunal ou um digitalizado podem se comportar de outro jeito. O número é
-honesto sobre esse edital e não deve ser lido como taxa geral.
+**Poucos editais.** As medidas vêm de dois documentos, ambos do TJSP e ambos
+judiciais. Um edital extrajudicial, de outro tribunal ou digitalizado pode se
+comportar de outro jeito. Dois é melhor que um — o segundo encontrou dois
+defeitos reais — e continua longe de uma taxa geral.
 
 **A ficha de referência foi conferida por mim.** Ela tira 100% em citação por
 construção — foi escrita lendo o documento. Serve para validar o *instrumento*,

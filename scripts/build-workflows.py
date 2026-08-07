@@ -565,6 +565,9 @@ const schemaInstruction = providerEnforcesSchema ? '' : [
 
 return [{ json: {
   role: 'extraction',
+  // Sem isto o gasto da extracao — que e todo o gasto do projeto — fica sem
+  // dono em `llm_calls`, e a view `usage_by_chat` mostra so zeros.
+  chatId: trigger.chat_id,
   system: systemPrompt + schemaInstruction,
   schema,
   structuredMode,
