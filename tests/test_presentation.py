@@ -46,6 +46,36 @@ def test_campo_composto_que_o_modelo_inventou() -> None:
     assert "appraisal" not in resultado
 
 
+def test_campo_sem_o_prefixo_do_caminho() -> None:
+    """Vistos na tela de um usuário: "condo fees" e "enforced credito valor".
+
+    O modelo escreve o nome do campo sem o prefixo `debts.`, ou com uma palavra
+    a mais. Os dois caíam no tradutor palavra a palavra e saíam em inglês.
+    """
+    assert presentation.label("condo fees") == "Dívida de condomínio"
+    assert presentation.label("enforced claim value") == "Valor cobrado na execução"
+    assert presentation.label("condo_fees amount") == "Dívida de condomínio"
+    assert presentation.label("debts.enforced_claim value") == "Valor cobrado na execução"
+
+
+def test_apelido_ambiguo_nao_e_indexado() -> None:
+    """`type` é de `procedure` e de `property`; adivinhar erraria em silêncio."""
+    assert "type" not in presentation._ALIASES
+    assert "value" not in presentation._ALIASES
+    # Mas o caminho completo continua resolvendo.
+    assert presentation.label("property.type") == "Tipo do imóvel"
+    assert presentation.label("procedure.type") == "Tipo de leilão (judicial ou extrajudicial)"
+
+
+def test_nenhum_rotulo_devolve_ingles_dos_campos_conhecidos() -> None:
+    """Varredura: nenhum caminho do schema pode sair com nome de variável."""
+    for path in presentation.LABELS:
+        for forma in (path, path.replace("_", " "), path.rsplit(".", 1)[-1]):
+            saida = presentation.label(forma)
+            assert "_" not in saida, (forma, saida)
+            assert "." not in saida.replace("…", ""), (forma, saida)
+
+
 def test_campo_desconhecido_degrada_em_vez_de_quebrar() -> None:
     """Nunca mostrar caminho cru, mesmo sem tradução exata."""
     resultado = presentation.label("property.some_new_field")

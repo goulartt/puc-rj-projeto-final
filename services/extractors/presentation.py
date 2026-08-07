@@ -109,6 +109,48 @@ _TERMS = {
 }
 
 
+def _key(text: str) -> str:
+    """Forma canônica para comparação: só letras, números e espaço simples."""
+    return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+
+
+# Termos finais ambíguos ou genéricos demais para identificar um campo sozinhos:
+# `type` é de `procedure` e de `property`, `value` aparece em toda parte.
+_TOO_GENERIC = {"type", "status", "value", "number", "court", "portal", "note",
+                "address", "criterion", "creditor"}
+
+
+def _build_aliases() -> dict[str, str]:
+    """Índice de apelidos derivado dos próprios rótulos.
+
+    O modelo nem sempre escreve o caminho completo: já mandou `condo fees` sem
+    o prefixo `debts.` e `enforced claim value` com uma palavra a mais. Ambos
+    caíam no tradutor palavra a palavra e saíam como "Condo fees" e "Enforced
+    crédito valor" — inglês na tela do usuário, que é justamente o defeito que
+    este módulo existe para eliminar.
+
+    Indexar o último segmento resolve, desde que ele identifique o campo
+    sozinho. Os que não identificam ficam de fora, porque um apelido ambíguo
+    erraria em silêncio, que é pior que degradar.
+    """
+    last_segments: dict[str, list[str]] = {}
+    for path in LABELS:
+        last_segments.setdefault(path.rsplit(".", 1)[-1], []).append(path)
+
+    aliases: dict[str, str] = {}
+    for path, text in LABELS.items():
+        aliases[_key(path)] = text
+
+    for segment, paths in last_segments.items():
+        if len(paths) > 1 or segment in _TOO_GENERIC:
+            continue
+        aliases.setdefault(_key(segment), LABELS[paths[0]])
+    return aliases
+
+
+_ALIASES = _build_aliases()
+
+
 def label(field: str) -> str:
     """Rótulo em português para um campo da ficha.
 
@@ -128,7 +170,19 @@ def label(field: str) -> str:
     if len(parts) > 1:
         return " e ".join(label(p) for p in parts)
 
-    # Prefixo conhecido com sufixo desconhecido.
+    key = _key(raw)
+    if key in _ALIASES:
+        return _ALIASES[key]
+
+    # Apelido contido no texto, do mais específico para o mais genérico:
+    # `debts.enforced_claim value` contém `debts enforced claim`, e é isso que
+    # o campo é — a palavra extra não muda nada.
+    for alias in sorted(_ALIASES, key=len, reverse=True):
+        if len(alias) >= 8 and alias in key:
+            return _ALIASES[alias]
+
+    # Prefixo conhecido com sufixo desconhecido: melhor o rótulo do pai do que
+    # o caminho cru.
     if "." in raw:
         head = raw.rsplit(".", 1)[0]
         if head in LABELS:

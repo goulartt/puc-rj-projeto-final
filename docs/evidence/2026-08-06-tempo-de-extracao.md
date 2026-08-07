@@ -92,15 +92,41 @@ mais do que ele diz.
 `none` fica descartado: 1 ficha válida em 3 não é uma opção, por mais rápido
 que seja.
 
-## O caminho não percorrido
+## A correção, agora implementada
 
-Com `minimal` adotado, o ganho restante ainda está no mesmo lugar.
+Antes era estimativa. Foi implementada e medida.
 
-O padrão que resolveria: em vez de aceitar ou rejeitar a ficha, **devolver os
-erros de validação ao modelo e pedir a correção**. Os erros observados são
-todos triviais de corrigir com o defeito apontado — "seu trecho tem 812
-caracteres, o limite é 600, use `[...]`".
+Ficha reprovada não é mais descartada: os erros de validação voltam ao modelo
+com o documento inteiro e um pedido de correção pontual. Uma tentativa só —
+duas falhas seguidas no mesmo documento indicam problema no edital ou no
+schema, não algo que insistir resolva.
 
-Se a correção acertasse na segunda tentativa, seriam ~56 s pela metade do custo
-atual. Não implementado, e por isso não medido — o número acima é estimativa, e
-está registrado como tal.
+Seis execuções com `reasoning_effort=none`, que falha com frequência e por isso
+serve para exercitar o caminho:
+
+| Resultado | Execuções | Tempo |
+|---|---|---|
+| válida de primeira | 3 | ~34 s |
+| **resgatada pela correção** | **1** | 64 s |
+| falhou mesmo após corrigir | 2 | ~59 s |
+
+O mecanismo funciona. O que ele não conserta é um modelo que também não
+consegue seguir a instrução na segunda tentativa: sem raciocínio, a correção
+falha pelo mesmo motivo que a extração.
+
+Com `minimal`, sete execuções sobre o edital de exemplo passaram de primeira.
+A falha observada em produção foi em **outro documento** — um edital de direitos
+fiduciários, cuja cláusula de IPTU é redigida de forma mais longa. É essa a
+classe de caso que a correção passa a resgatar, e é ela que justifica manter o
+caminho mesmo com o exemplo passando sempre.
+
+Custo: a correção acrescenta cerca de US$ 0,002 quando dispara, e o campo
+`cost_usd` da ficha já soma as duas chamadas — a tentativa que falhou também
+foi paga.
+
+## Uma amostra que era pequena demais
+
+`minimal` foi adotado com base em três execuções, e este documento afirmou
+3/3. A primeira ficha real que passou por ele, num edital diferente, falhou.
+Três execuções sobre um documento não medem confiabilidade — medem que aquele
+documento passou três vezes.

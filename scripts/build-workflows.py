@@ -588,6 +588,96 @@ return [{ json: {
 } }];
 """
 
+INGEST_REPAIR_PROMPT = """
+// Pede a correção dos erros de validação, em vez de jogar a ficha fora.
+//
+// Sem isto, uma ficha reprovada por formato — trecho acima de 600 caracteres,
+// campo nulo onde o schema quer objeto — custa os tokens e nao entrega nada. O
+// erro observado em producao e desse tipo: o modelo entendeu o edital e
+// escreveu a citacao longa demais.
+//
+// Mandamos a ficha inteira de volta com os erros apontados e pedimos o
+// documento corrigido. Um patch seria mais barato e muito mais fragil: erra o
+// caminho, aplica no lugar errado, e o defeito fica invisivel.
+const prepared = $('Preparar extracao').first().json;
+const gateway = $('Extrair ficha').first().json;
+const check = $('Validar ficha').first().json;
+
+const errors = (check.errors || [])
+  .map((e) => '- ' + e.path + ': ' + e.message)
+  .join(String.fromCharCode(10));
+
+const NL = String.fromCharCode(10);
+const instruction = [
+  'A ficha abaixo foi reprovada pela validacao do schema. Corrija APENAS os',
+  'erros listados e devolva o documento JSON inteiro, sem comentarios.',
+  '',
+  '# ERROS',
+  errors,
+  '',
+  '# COMO CORRIGIR OS CASOS MAIS COMUNS',
+  '- trecho longo demais: encurte a citacao mantendo o sentido, e use [...]',
+  '  para juntar dois pontos distantes em vez de copiar o texto do meio;',
+  '- campo nulo onde o schema pede objeto: use o objeto com os campos',
+  '  internos nulos, ou remova o campo se ele for opcional;',
+  '- valor fora do enum: escolha um dos valores permitidos pelo schema.',
+  '',
+  'Nao reescreva o que esta correto. Nao invente informacao nova: se um trecho',
+  'precisa encurtar, corte-o, nao o reformule com outras palavras.',
+  '',
+  '# FICHA A CORRIGIR',
+  JSON.stringify(gateway.parsed, null, 2),
+].join(NL);
+
+return [{ json: {
+  role: 'extraction',
+  chatId: prepared._chat_id,
+  system: prepared.system,
+  schema: prepared.schema,
+  structuredMode: prepared.structuredMode,
+  maxTokens: prepared.maxTokens,
+  cacheSystem: true,
+  expectJson: true,
+  messages: [{ role: 'user', content: instruction }],
+} }];
+"""
+
+INGEST_CHECK_REPAIR = """
+// Mesma conferencia de `Conferir resultado`, agora sobre a ficha corrigida.
+// Se ainda houver erro, o relato menciona a tentativa — "invalida" e uma
+// informacao diferente de "invalida mesmo depois de corrigir".
+const prepared = $('Preparar extracao').first().json;
+const first = $('Extrair ficha').first().json;
+const gateway = $('Corrigir ficha').first().json;
+const check = $('Validar correcao').first().json;
+
+const problems = [];
+if (gateway.blocked) problems.push('gateway bloqueou na correcao: ' + gateway.reason);
+if (gateway.parse_failed) problems.push('correcao nao era JSON');
+if (check && check.valid === false) {
+  problems.push('ficha invalida mesmo apos correcao (' + check.error_count + ' erro(s)): ' +
+    (check.errors || []).slice(0, 3).map((e) => e.path + ': ' + e.message).join(' | '));
+}
+
+const firstCost = first.cost_usd || 0;
+const repairCost = gateway.cost_usd || 0;
+
+return [{ json: {
+  ok: problems.length === 0,
+  problems,
+  repaired: problems.length === 0,
+  chat_id: prepared._chat_id,
+  file_name: prepared._file_name,
+  sha256: prepared._sha256,
+  markdown: prepared._markdown,
+  deterministic: prepared._deterministic,
+  analysis: gateway.parsed || null,
+  usage: gateway.usage || null,
+  // Custo total do edital: a tentativa que falhou tambem foi paga.
+  cost_usd: Math.round((firstCost + repairCost) * 1e6) / 1e6,
+} }];
+"""
+
 INGEST_CHECK = """
 // Decide se a ficha pode ser persistida. Ficha que não valida não entra no
 // banco: uma ficha parcial envenena silenciosamente toda pergunta seguinte.
@@ -720,16 +810,51 @@ def build_ingest() -> dict:
         }, credentials={"postgres": {"id": "leilao-postgres", "name": "Postgres do projeto"}}),
         node("Resposta de sucesso", "n8n-nodes-base.code", 2, [2040, -110], {"jsCode": """
 const saved = $input.first().json;
-const result = $('Conferir resultado').first().json;
+
+// `Persistir ficha` recebe de dois caminhos: a extracao que passou de primeira
+// e a que passou depois de corrigida. Referenciar o no errado devolveria a
+// ficha reprovada. O try existe porque `$()` num no que nao executou lanca.
+let result;
+let repaired = false;
+try {
+  result = $('Conferir correcao').first().json;
+  repaired = true;
+} catch (e) {
+  result = $('Conferir resultado').first().json;
+}
+
 return [{ json: {
   ok: true,
   notice_id: saved.id,
   chat_id: result.chat_id,
   analysis: result.analysis,
   usage: result.usage,
+  // Quando houve correcao, o custo ja soma as duas chamadas.
   cost_usd: result.cost_usd,
+  repaired,
 } }];
 """}),
+        node("Preparar correcao", "n8n-nodes-base.code", 2, [1700, 240],
+             {"jsCode": INGEST_REPAIR_PROMPT}),
+        node("Corrigir ficha", "n8n-nodes-base.executeWorkflow", 1.3, [1900, 240], {
+            "workflowId": {"__rl": True, "value": GATEWAY_ID, "mode": "id"},
+            "options": {"waitForSubWorkflow": True},
+        }),
+        node("Validar correcao", "n8n-nodes-base.httpRequest", 4.2, [2100, 240], {
+            "method": "POST", "url": "={{ $env.DOCLING_URL }}/validate",
+            "sendBody": True, "specifyBody": "json",
+            "jsonBody": "={{ JSON.stringify({ document: $json.parsed }) }}",
+            "options": {"timeout": 60000}}),
+        node("Conferir correcao", "n8n-nodes-base.code", 2, [2300, 240],
+             {"jsCode": INGEST_CHECK_REPAIR}),
+        node("Correcao valida?", "n8n-nodes-base.if", 2.2, [2500, 240], {
+            "conditions": {
+                "options": {"caseSensitive": True, "typeValidation": "strict", "version": 2},
+                "conditions": [{"id": "repaired",
+                                "operator": {"type": "boolean", "operation": "true",
+                                             "singleValue": True},
+                                "leftValue": "={{ $json.ok }}"}],
+                "combinator": "and"}}),
         node("Resposta de falha", "n8n-nodes-base.code", 2, [1840, 110], {"jsCode": """
 // Falha explícita e com causa. Persistir ficha parcial seria pior: toda
 // pergunta seguinte responderia com base em dado que ninguém conferiu.
@@ -755,7 +880,21 @@ return [{ json: { ok: false, problems: r.problems, chat_id: r.chat_id, file_name
         "Extrair ficha": {"main": [[{"node": "Validar ficha", "type": "main", "index": 0}]]},
         "Validar ficha": {"main": [[{"node": "Conferir resultado", "type": "main", "index": 0}]]},
         "Conferir resultado": {"main": [[{"node": "Ficha valida?", "type": "main", "index": 0}]]},
+        # Ficha reprovada nao vai direto para a falha: vale uma tentativa de
+        # correcao com os erros apontados. Os erros observados sao de formato,
+        # nao de compreensao, e descartar uma extracao ja paga por causa de uma
+        # citacao longa demais e desperdicio.
         "Ficha valida?": {"main": [
+            [{"node": "Persistir ficha", "type": "main", "index": 0}],
+            [{"node": "Preparar correcao", "type": "main", "index": 0}],
+        ]},
+        "Preparar correcao": {"main": [[{"node": "Corrigir ficha", "type": "main", "index": 0}]]},
+        "Corrigir ficha": {"main": [[{"node": "Validar correcao", "type": "main", "index": 0}]]},
+        "Validar correcao": {"main": [[{"node": "Conferir correcao", "type": "main", "index": 0}]]},
+        "Conferir correcao": {"main": [[{"node": "Correcao valida?", "type": "main", "index": 0}]]},
+        # Uma tentativa so. Duas falhas seguidas no mesmo documento indicam
+        # problema no edital ou no schema, e nao algo que insistir resolva.
+        "Correcao valida?": {"main": [
             [{"node": "Persistir ficha", "type": "main", "index": 0}],
             [{"node": "Resposta de falha", "type": "main", "index": 0}],
         ]},
