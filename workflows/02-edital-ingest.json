@@ -45,6 +45,43 @@
     },
     {
       "parameters": {
+        "jsCode": "\n// Segundo aviso, disparado quando o PDF ja virou texto e a analise vai comecar.\n//\n// Nao e um cronometro: um no Wait suspenderia a execucao inteira, inclusive a\n// propria extracao, entao \"avise se passar de 1 minuto\" nao existe dentro de\n// uma execucao do n8n. O que existe e este marco — a conversao termina em\n// segundos e o que vem depois leva minutos —, e nele da para dizer algo mais\n// util que \"aguarde\": quantas paginas o documento tem e quanto falta.\nconst conversion = $input.first().json;\nconst trigger = $('Chamada de outro fluxo').first().json;\nconst chatId = String(trigger.chat_id || '');\n\n// Chat de teste nao existe no Telegram; devolver lista vazia encerra este ramo\n// sem erro, e o smoke test continua rodando sem falar com a rede.\nif (!/^-?[0-9]+$/.test(chatId)) return [];\n\nconst pages = conversion.pages;\nconst NL = String.fromCharCode(10);\nreturn [{ json: { chat_id: chatId, text:\n  'Documento lido' + (pages ? ' — ' + pages + (pages === 1 ? ' pagina' : ' paginas') : '') +\n  '.' + NL + NL +\n  'Agora estou extraindo prazos, valores, onus e debitos, e conferindo cada um ' +\n  'contra o texto. Essa parte leva cerca de dois minutos.' } }];\n"
+      },
+      "id": "aviso-de-progresso",
+      "name": "Aviso de progresso",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        420,
+        -300
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "={{ $json.chat_id }}",
+        "text": "={{ $json.text }}",
+        "additionalFields": {
+          "parse_mode": "HTML",
+          "appendAttribution": false
+        }
+      },
+      "id": "responder-progresso",
+      "name": "Responder progresso",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [
+        620,
+        -300
+      ],
+      "credentials": {
+        "telegramApi": {
+          "id": "leilao-telegram",
+          "name": "Bot do Telegram"
+        }
+      }
+    },
+    {
+      "parameters": {
         "method": "POST",
         "url": "={{ $env.DOCLING_URL }}/extract",
         "sendBody": true,
@@ -261,7 +298,23 @@
       "main": [
         [
           {
+            "node": "Aviso de progresso",
+            "type": "main",
+            "index": 0
+          },
+          {
             "node": "Extrair campos deterministicos",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Aviso de progresso": {
+      "main": [
+        [
+          {
+            "node": "Responder progresso",
             "type": "main",
             "index": 0
           }

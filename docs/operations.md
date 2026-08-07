@@ -96,6 +96,23 @@ A variação entre extrações — 147 s contra 236 s no mesmo edital — vem do
 de tokens de saída, não do tamanho do PDF: o modelo de raciocínio decide quanto
 pensar. `output_tokens_per_second` na view separa as duas coisas.
 
+### As mensagens que o bot manda durante a ingestão
+
+| Quando | O quê |
+|---|---|
+| ~1 s | "Recebi o edital — <nome>." |
+| ~5 s | "Documento lido — N páginas. Agora estou extraindo…" |
+| ~110 s | a ficha |
+
+Não há um terceiro aviso por tempo decorrido, e não é esquecimento: o nó Wait
+do n8n suspende a **execução inteira**, não um ramo. Um "avise se passar de um
+minuto" atrasaria em um minuto a própria extração que ele deveria acompanhar.
+
+Os dois avisos saem de marcos reais do processamento — o recebimento e o fim da
+conversão do PDF —, e por isso conseguem dizer algo além de "aguarde". Para um
+aviso genuinamente cronometrado seria preciso um segundo fluxo em Schedule
+Trigger varrendo execuções em andamento, o que não se pagou aqui.
+
 ### Logs dos contêineres
 
 ```bash

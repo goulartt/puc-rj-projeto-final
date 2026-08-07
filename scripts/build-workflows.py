@@ -472,6 +472,31 @@ return [{ json: { chat_id: 'smoke-test', file_name: 'edital-exemplo.pdf' },
 INGEST_ID = "editalingest0001"
 INGEST_OUTPUT = ROOT / "workflows" / "02-edital-ingest.json"
 
+INGEST_PROGRESS = """
+// Segundo aviso, disparado quando o PDF ja virou texto e a analise vai comecar.
+//
+// Nao e um cronometro: um no Wait suspenderia a execucao inteira, inclusive a
+// propria extracao, entao "avise se passar de 1 minuto" nao existe dentro de
+// uma execucao do n8n. O que existe e este marco — a conversao termina em
+// segundos e o que vem depois leva minutos —, e nele da para dizer algo mais
+// util que "aguarde": quantas paginas o documento tem e quanto falta.
+const conversion = $input.first().json;
+const trigger = $('Chamada de outro fluxo').first().json;
+const chatId = String(trigger.chat_id || '');
+
+// Chat de teste nao existe no Telegram; devolver lista vazia encerra este ramo
+// sem erro, e o smoke test continua rodando sem falar com a rede.
+if (!/^-?[0-9]+$/.test(chatId)) return [];
+
+const pages = conversion.pages;
+const NL = String.fromCharCode(10);
+return [{ json: { chat_id: chatId, text:
+  'Documento lido' + (pages ? ' — ' + pages + (pages === 1 ? ' pagina' : ' paginas') : '') +
+  '.' + NL + NL +
+  'Agora estou extraindo prazos, valores, onus e debitos, e conferindo cada um ' +
+  'contra o texto. Essa parte leva cerca de dois minutos.' } }];
+"""
+
 INGEST_PREPARE_PROMPT = """
 // Monta a chamada de extração. O prompt e o schema vêm de arquivos montados no
 // container, e não embutidos aqui: assim continuam revisáveis em diff e o
@@ -618,6 +643,13 @@ def build_ingest() -> dict:
             ]},
             "options": {"timeout": 900000},
         }),
+        node("Aviso de progresso", "n8n-nodes-base.code", 2, [420, -300],
+             {"jsCode": INGEST_PROGRESS}),
+        node("Responder progresso", "n8n-nodes-base.telegram", 1.2, [620, -300], {
+            "chatId": "={{ $json.chat_id }}",
+            "text": "={{ $json.text }}",
+            "additionalFields": {"parse_mode": "HTML", "appendAttribution": False},
+        }, credentials={"telegramApi": {"id": "leilao-telegram", "name": "Bot do Telegram"}}),
         node("Extrair campos deterministicos", "n8n-nodes-base.httpRequest", 4.5, [400, 0], {
             "method": "POST",
             "url": "={{ $env.DOCLING_URL }}/extract",
@@ -708,7 +740,14 @@ return [{ json: { ok: false, problems: r.problems, chat_id: r.chat_id, file_name
 
     connections = {
         "Chamada de outro fluxo": {"main": [[{"node": "Converter PDF", "type": "main", "index": 0}]]},
-        "Converter PDF": {"main": [[{"node": "Extrair campos deterministicos", "type": "main", "index": 0}]]},
+        # O aviso sai primeiro; a extracao segue no mesmo item, intacto. Em
+        # serie nao daria: o no do Telegram substitui o item pela resposta da
+        # API e o Markdown do edital se perderia.
+        "Converter PDF": {"main": [[
+            {"node": "Aviso de progresso", "type": "main", "index": 0},
+            {"node": "Extrair campos deterministicos", "type": "main", "index": 0},
+        ]]},
+        "Aviso de progresso": {"main": [[{"node": "Responder progresso", "type": "main", "index": 0}]]},
         "Extrair campos deterministicos": {"main": [[{"node": "Buscar prompt de analista", "type": "main", "index": 0}]]},
         "Buscar prompt de analista": {"main": [[{"node": "Buscar schema da ficha", "type": "main", "index": 0}]]},
         "Buscar schema da ficha": {"main": [[{"node": "Preparar extracao", "type": "main", "index": 0}]]},
