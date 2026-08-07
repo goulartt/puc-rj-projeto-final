@@ -557,6 +557,61 @@ _ITEM_LABELS = {
 }
 
 
+# ─── A situação processual como texto ───────────────────────────────────────
+
+_SIGNAL_LABELS = {
+    "embargos": "embargos", "recurso": "recurso", "suspensao": "suspensão",
+    "acordo": "acordo entre as partes", "pagamento": "pagamento ou remição",
+    "adjudicacao": "adjudicação", "arrematacao": "arrematação já registrada",
+    "extincao": "extinção ou arquivamento", "penhora": "penhora",
+    "inatividade": "processo sem movimentação recente",
+}
+
+
+def case_to_text(case: dict | None) -> str:
+    """A consulta ao DataJud em português, para o Q&A poder responder por ela.
+
+    Sem isto o dado ficava no banco e não chegava à conversa: perguntado sobre
+    o processo do edital, o assistente respondia que a informação "não está
+    presente no conteúdo do edital" e mandava a pessoa consultar os autos — com
+    446 movimentos já consultados e gravados.
+    """
+    if not case or not case.get("found"):
+        return ""
+
+    linhas = ["Situação do processo, conforme consulta ao DataJud (CNJ):"]
+    for chave, rotulo in (("classe", "Classe"), ("orgao_julgador", "Órgão julgador"),
+                          ("data_ajuizamento", "Ajuizado em")):
+        if case.get(chave):
+            linhas.append(f"  {rotulo}: {case[chave]}")
+    if case.get("assuntos"):
+        linhas.append("  Assuntos: " + "; ".join(case["assuntos"]))
+    if case.get("movement_count"):
+        linhas.append(f"  Movimentos registrados: {case['movement_count']}")
+    if case.get("last_movement"):
+        ultimo = case["last_movement"]
+        linhas.append(f"  Último movimento: {ultimo.get('name')} em {ultimo.get('date')}")
+
+    ativos = case.get("active_signals") or []
+    if ativos:
+        linhas.append("  Sinais que merecem atenção:")
+        for sinal in ativos:
+            nome = _SIGNAL_LABELS.get(sinal.get("kind"), sinal.get("kind"))
+            quando = sinal.get("date")
+            vezes = sinal.get("occurrences", 1)
+            detalhe = f" ({vezes}x, mais recente em {quando})" if vezes > 1 else (
+                f" (em {quando})" if quando else "")
+            linhas.append(f"    - {nome}{detalhe}: {sinal.get('description')}")
+    else:
+        linhas.append("  Nenhum sinal de suspensão, embargos, acordo, adjudicação "
+                      "ou arrematação nos movimentos consultados.")
+
+    linhas.append("  Limite desta fonte: o DataJud traz metadados e andamentos, "
+                  "não peças nem decisões. Um movimento diz que algo aconteceu, "
+                  "não o que foi decidido.")
+    return "\n".join(linhas)
+
+
 # ─── Composição ─────────────────────────────────────────────────────────────
 
 def _rank_gaps(gaps: list[dict], max_items: int) -> list[dict]:

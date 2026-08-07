@@ -237,7 +237,9 @@ def present(payload: dict = Body(...)) -> JSONResponse:
     # A ficha em português, para o Q&A ler no lugar do JSON com chaves em
     # inglês. Sem isto, o modelo repete a chave na resposta
     # ("extinguished_by_sale: true") ou tenta traduzi-la e inventa.
-    return JSONResponse({**view, "ficha_text": presentation.ficha_to_text(ficha)})
+    return JSONResponse({**view,
+                         "ficha_text": presentation.ficha_to_text(ficha),
+                         "case_text": presentation.case_to_text(case)})
 
 
 @app.post("/inspect")

@@ -82,8 +82,9 @@ rastreabilidade. A separação abaixo é o que torna o produto viável:
 └─────────────────────────────────────────────────────────────────┘
               ↓
 ┌─ ESTÁGIO 3 — N vezes por edital ────────────────────────────────┐
-│  filtro de escopo (determinístico) → pergunta + ficha →         │
-│  modelo pequeno local → resposta citando o documento            │
+│  filtro de escopo (determinístico) → pergunta + ficha +         │
+│  situação processual → modelo pequeno local → resposta          │
+│  citando o documento e separando as duas fontes                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
 

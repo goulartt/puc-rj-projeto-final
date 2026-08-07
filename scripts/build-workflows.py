@@ -1306,7 +1306,8 @@ function bold(value) { return '<b>' + esc(value) + '</b>'; }
 // do escape — os pares abaixo sao gerados aqui e por isso sempre fecham.
 function fromMarkdown(text) {
   return esc(text)
-    .replace(/^\s*#{1,6}\s*(.+)$/gm, (m, title) => '<b>' + title.trim() + '</b>')
+    .replace(/^\s*#{1,6}\s*(.+)$/gm,
+             (m, title) => '<b>' + title.trim().replace(/\*\*/g, '') + '</b>')
     .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
     .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, '$1<i>$2</i>')
     .replace(/`([^`\n]+)`/g, '<code>$1</code>')
@@ -1580,7 +1581,10 @@ const glossary = $('Buscar glossario').first().json.text;
 // uma vez so e reaproveitado — e o que torna o cache util.
 const contexts = $('Montar contexto').all().map((i) => i.json);
 const rendered = $('Ficha em portugues').first().json;
-if (contexts.length) contexts[0].ficha_text = rendered.ficha_text;
+if (contexts.length) {
+  contexts[0].ficha_text = rendered.ficha_text;
+  contexts[0].case_text = rendered.case_text;
+}
 
 const parts = [systemPrompt, '', '# GLOSSARIO', glossary];
 if (contexts.length && contexts[0].has_notice) {
@@ -1589,6 +1593,12 @@ if (contexts.length && contexts[0].has_notice) {
   // inventar traducao — "a penhora (gravida do processo)", palavra que nao
   // existe em edital nenhum. Sem ingles a frente, nao ha o que improvisar.
   parts.push('', '# FICHA DO EDITAL CARREGADO', contexts[0].ficha_text);
+  // A consulta processual e fonte propria, e nao parte do edital: separa-la
+  // deixa claro de onde veio cada afirmacao quando a resposta cita as duas.
+  if (contexts[0].case_text) {
+    parts.push('', '# SITUACAO PROCESSUAL (consulta ao DataJud)',
+               contexts[0].case_text);
+  }
 } else {
   parts.push('', '# SEM EDITAL CARREGADO',
     'A pessoa ainda nao enviou nenhum edital. Responda duvidas conceituais pelo',
@@ -1938,10 +1948,23 @@ def build_chat() -> dict:
         }, credentials=POSTGRES_CRED, alwaysOutputData=True),
         node("Montar contexto", "n8n-nodes-base.code", 2, [880, -120],
              {"jsCode": CHAT_CONTEXT}),
+        # A situacao processual ja consultada na ingestao. Sem ela, perguntado
+        # sobre o processo do edital o assistente respondia que a informacao
+        # "nao esta presente no conteudo do edital" — com 446 movimentos
+        # gravados no banco.
+        node("Buscar processo do chat", "n8n-nodes-base.postgres", 2.7, [940, -120], {
+            "operation": "executeQuery",
+            "query": ("SELECT movements AS case_analysis FROM case_lookups "
+                      "WHERE cnj_number = $1 LIMIT 1;"),
+            "options": {"queryReplacement":
+                        "={{ [ (($json.analysis || {}).court_case || {}).number || '' ] }}"},
+        }, credentials=POSTGRES_CRED, alwaysOutputData=True),
         node("Ficha em portugues", "n8n-nodes-base.httpRequest", 4.2, [980, -120], {
             "method": "POST", "url": "={{ $env.DOCLING_URL }}/present",
             "sendBody": True, "specifyBody": "json",
-            "jsonBody": "={{ JSON.stringify({ ficha: ($json.analysis || {}) }) }}",
+            "jsonBody": ("={{ JSON.stringify({"
+                         " ficha: ($('Montar contexto').first().json.analysis || {}),"
+                         " case: ($json.case_analysis || null) }) }}"),
             "options": {"timeout": 30000}}),
         node("Buscar prompt de Q&A", "n8n-nodes-base.httpRequest", 4.2, [1080, -120], {
             "url": "={{ $env.DOCLING_URL }}/prompt/qa-system", "options": {"timeout": 30000}}),
@@ -2027,8 +2050,8 @@ def build_chat() -> dict:
         ]},
         **chain("Chamar ingestao", "Limpar pendente", "Buscar situacao do processo",
                 "Traduzir para exibicao", "Resposta da ficha", "Responder ficha"),
-        **chain("Carregar ficha do chat", "Montar contexto", "Ficha em portugues",
-                "Buscar prompt de Q&A",
+        **chain("Carregar ficha do chat", "Montar contexto",
+                "Buscar processo do chat", "Ficha em portugues", "Buscar prompt de Q&A",
                 "Buscar glossario",
                 "Preparar pergunta", "Perguntar ao modelo", "Resposta da pergunta",
                 "Responder pergunta"),
@@ -2066,6 +2089,7 @@ return [
       file_name: 'edital-exemplo.pdf', mime_type: 'application/pdf' } } },
     binary: pdf.binary },
   { json: { message: { chat, text: 'Esse imovel esta ocupado?' } } },
+  { json: { message: { chat, text: 'O que o processo judicial mostra?' } } },
   { json: { message: { chat, text: 'Vale a pena comprar esse imovel?' } } },
   { json: { message: { chat, text: 'O que e comissao do leiloeiro?' } } },
   { json: { message: { chat, text: 'Posso processar o antigo dono?' } } },
