@@ -232,8 +232,12 @@ def present(payload: dict = Body(...)) -> JSONResponse:
     # O bloco determinístico traz a contagem de imóveis do documento, que a
     # ficha não tem: ela descreve um lote e não sabe quantos existem.
     deterministic = payload.get("deterministic")
-    return JSONResponse(presentation.present(ficha, case, max_items=max_items,
-                                             deterministic=deterministic))
+    view = presentation.present(ficha, case, max_items=max_items,
+                                deterministic=deterministic)
+    # A ficha em português, para o Q&A ler no lugar do JSON com chaves em
+    # inglês. Sem isto, o modelo repete a chave na resposta
+    # ("extinguished_by_sale: true") ou tenta traduzi-la e inventa.
+    return JSONResponse({**view, "ficha_text": presentation.ficha_to_text(ficha)})
 
 
 @app.post("/inspect")

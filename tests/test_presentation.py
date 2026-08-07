@@ -305,3 +305,69 @@ def test_edital_de_um_imovel_nao_gera_aviso() -> None:
         {}, deterministic={"multi_lot": {"multi": False, "properties": 1}}
     )
     assert saida["warning"] is None
+
+
+# ─── A ficha em português ───────────────────────────────────────────────────
+#
+# O Q&A recebia a ficha em JSON com as chaves do schema em inglês, e o modelo
+# tropeçava nelas de dois jeitos numa conversa real: repetiu uma chave na
+# resposta ("extinguished_by_sale: true") e inventou a tradução de outra —
+# "a penhora (grávida do processo)", palavra que não aparece em edital nenhum
+# nem em ficha nenhuma.
+
+FICHA = {
+    "procedure": {"type": "judicial", "quote": "EDITAL DE LEILÃO JUDICIAL",
+                  "confidence": "high", "source": "both"},
+    "property": {"registry_number": {"value": "106.233", "quote": "matrícula nº 106.233",
+                                     "confidence": "high", "source": "both"}},
+    "appraisal": {"value": {"amount_brl": 772545.0, "reference_date": "2025-10-01",
+                            "quote": "R$ 772.545,00", "confidence": "high",
+                            "source": "both"}},
+    "occupancy": {"status": {"value": "not_informed", "quote": "eventuais ocupantes",
+                             "confidence": "low", "source": "llm"}},
+    "encumbrances": [{"type": "penhora", "registry_entry": "Av.05",
+                      "extinguished_by_sale": True, "quote": "Av.05 - penhora"}],
+    "court_case": {"number": "1002465-53.2023.8.26.0100", "valid": True,
+                   "datajud_alias": "api_publica_tjsp"},
+}
+
+
+def test_nenhuma_chave_em_ingles_chega_ao_modelo() -> None:
+    texto = presentation.ficha_to_text(FICHA)
+    for chave in ("extinguished_by_sale", "registry_number", "amount_brl",
+                  "not_informed", "occupancy", "appraisal", "procedure"):
+        assert chave not in texto, chave
+
+
+def test_traduz_valores_de_enum() -> None:
+    texto = presentation.ficha_to_text(FICHA)
+    assert "não informado no edital" in texto
+    assert "judicial" in texto
+    assert "extingue-se com a venda: sim" in texto
+
+
+def test_preserva_o_trecho_que_sustenta_cada_campo() -> None:
+    """Sem o trecho a resposta perde a rastreabilidade, que é a promessa central."""
+    texto = presentation.ficha_to_text(FICHA)
+    assert 'trecho: "matrícula nº 106.233"' in texto
+    assert 'trecho: "EDITAL DE LEILÃO JUDICIAL"' in texto
+
+
+def test_confianca_nao_vai_junto_do_valor() -> None:
+    """Anexada ao valor, o modelo a leu como se fosse o valor.
+
+    Perguntado sobre ocupação, respondeu que "a ocupação é baixa" — lendo o
+    "(confiança baixa)" que vinha ao lado de "não informado".
+    """
+    texto = presentation.ficha_to_text(FICHA)
+    assert "baixa" not in texto
+
+
+def test_omite_detalhe_de_maquina() -> None:
+    texto = presentation.ficha_to_text(FICHA)
+    assert "api_publica_tjsp" not in texto
+
+
+def test_ficha_vazia_devolve_texto_vazio() -> None:
+    assert presentation.ficha_to_text({}) == ""
+    assert presentation.ficha_to_text(None) == ""  # type: ignore[arg-type]

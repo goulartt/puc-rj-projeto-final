@@ -1553,10 +1553,16 @@ const glossary = $('Buscar glossario').first().json.text;
 // O bloco de sistema e identico entre perguntas do mesmo chat, entao e montado
 // uma vez so e reaproveitado — e o que torna o cache util.
 const contexts = $('Montar contexto').all().map((i) => i.json);
+const rendered = $('Ficha em portugues').first().json;
+if (contexts.length) contexts[0].ficha_text = rendered.ficha_text;
+
 const parts = [systemPrompt, '', '# GLOSSARIO', glossary];
 if (contexts.length && contexts[0].has_notice) {
-  parts.push('', '# FICHA DO EDITAL CARREGADO',
-             JSON.stringify(contexts[0].analysis, null, 2));
+  // A ficha em portugues, e nao o JSON do schema. Com as chaves em ingles o
+  // modelo as repetia na resposta ("extinguished_by_sale: true") e chegou a
+  // inventar traducao — "a penhora (gravida do processo)", palavra que nao
+  // existe em edital nenhum. Sem ingles a frente, nao ha o que improvisar.
+  parts.push('', '# FICHA DO EDITAL CARREGADO', contexts[0].ficha_text);
 } else {
   parts.push('', '# SEM EDITAL CARREGADO',
     'A pessoa ainda nao enviou nenhum edital. Responda duvidas conceituais pelo',
@@ -1639,6 +1645,27 @@ const brl = (n) => (n == null ? null
   : n.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }));
 const line = (label, value) => (value ? bold(label + ':') + ' ' + esc(value) : null);
 
+// Data e hora da praça no formato de quem lê, com o lance mínimo quando o
+// edital o traz — é a informação que decide se dá tempo de participar.
+const quando = (iso) => {
+  if (!iso) return null;
+  const [data, hora] = String(iso).split('T');
+  const [ano, mes, dia] = (data || '').split('-');
+  if (!dia) return null;
+  const hm = (hora || '').slice(0, 5);
+  return dia + '/' + mes + '/' + ano + (hm ? ' às ' + hm : '');
+};
+
+const praca = (round) => {
+  if (!round) return null;
+  const inicio = quando(round.starts_at);
+  const fim = quando(round.ends_at);
+  const minimo = ((round.minimum_bid || {}).amount_brl);
+  const periodo = inicio && fim ? inicio + ' até ' + fim : (inicio || fim);
+  if (!periodo) return null;
+  return periodo + (minimo ? ' — lance mínimo ' + brl(minimo) : '');
+};
+
 const occupancy = {
   occupied: 'ocupado', vacant: 'desocupado', not_informed: 'NÃO INFORMADO no edital',
 }[((a.occupancy || {}).status || {}).value || (a.occupancy || {}).status] || null;
@@ -1662,6 +1689,8 @@ out.push(
        || (appraisal.value || {}).amount_brl)),
   line('Ocupação', occupancy),
   line('Processo', (a.court_case || {}).number),
+  line('1ª praça', praca((a.auction || {}).first_round)),
+  line('2ª praça', praca((a.auction || {}).second_round)),
   '',
 );
 const filtered = out.filter((l) => l !== null);
@@ -1874,6 +1903,11 @@ def build_chat() -> dict:
         }, credentials=POSTGRES_CRED, alwaysOutputData=True),
         node("Montar contexto", "n8n-nodes-base.code", 2, [880, -120],
              {"jsCode": CHAT_CONTEXT}),
+        node("Ficha em portugues", "n8n-nodes-base.httpRequest", 4.2, [980, -120], {
+            "method": "POST", "url": "={{ $env.DOCLING_URL }}/present",
+            "sendBody": True, "specifyBody": "json",
+            "jsonBody": "={{ JSON.stringify({ ficha: ($json.analysis || {}) }) }}",
+            "options": {"timeout": 30000}}),
         node("Buscar prompt de Q&A", "n8n-nodes-base.httpRequest", 4.2, [1080, -120], {
             "url": "={{ $env.DOCLING_URL }}/prompt/qa-system", "options": {"timeout": 30000}}),
         node("Buscar glossario", "n8n-nodes-base.httpRequest", 4.2, [1280, -120], {
@@ -1956,7 +1990,8 @@ def build_chat() -> dict:
         ]},
         **chain("Chamar ingestao", "Limpar pendente", "Buscar situacao do processo",
                 "Traduzir para exibicao", "Resposta da ficha", "Responder ficha"),
-        **chain("Carregar ficha do chat", "Montar contexto", "Buscar prompt de Q&A",
+        **chain("Carregar ficha do chat", "Montar contexto", "Ficha em portugues",
+                "Buscar prompt de Q&A",
                 "Buscar glossario",
                 "Preparar pergunta", "Perguntar ao modelo", "Resposta da pergunta",
                 "Responder pergunta"),

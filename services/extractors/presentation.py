@@ -392,6 +392,171 @@ def describe_lots(lots: list[dict]) -> list[str]:
     return linhas
 
 
+# ─── A ficha como texto em português ────────────────────────────────────────
+#
+# O Q&A recebia a ficha em JSON cru, com as chaves em inglês do schema. Duas
+# consequências observadas numa conversa real:
+#
+#   "…extinguished_by_sale: true"      — o modelo repetiu a chave na resposta
+#   "A penhora (grávida do processo)"  — e tentou traduzir outra, inventando
+#                                         uma palavra que não existe em edital
+#                                         nenhum, nem em nenhuma ficha
+#
+# A raiz é a mesma: pedir a um modelo pequeno que leia inglês estruturado e
+# responda em português jurídico convida à improvisação. Aqui a tradução é
+# feita antes, por regra, e o modelo só vê português.
+
+_ENUMS = {
+    "judicial": "judicial", "extrajudicial": "extrajudicial",
+    "occupied": "ocupado", "vacant": "desocupado",
+    "not_informed": "não informado no edital",
+    "high": "alto", "medium": "médio", "low": "baixo",
+    "deterministic": "extraído por regra", "llm": "extraído pelo modelo",
+    "both": "confirmado pelos dois", "derived": "derivado",
+}
+
+
+def _render_value(value: Any) -> str | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        return "sim" if value else "não"
+    if isinstance(value, (int, float)):
+        return _brl(float(value))
+    text = str(value)
+    return _ENUMS.get(text, text)
+
+
+def _render_leaf(node: dict) -> str | None:
+    """Um campo `{value, quote, confidence}` numa linha legível."""
+    # `value` na maioria dos campos, `amount_brl` nos monetários e `type` em
+    # `procedure` — três formas de folha no mesmo schema.
+    raw = node.get("value")
+    if raw is None:
+        raw = node.get("amount_brl", node.get("type"))
+    rendered = _render_value(raw)
+    if rendered is None:
+        return None
+
+    # `confidence` fica de fora de propósito. Anexada ao valor, o modelo a leu
+    # como se fosse o valor: perguntado sobre ocupação, respondeu que "a
+    # ocupação é baixa", lendo o "(confiança baixa)" que vinha ao lado de "não
+    # informado". A confiança é anotação de auditoria e continua no JSON da
+    # ficha, que é onde ela serve.
+    if node.get("reference_date"):
+        rendered += f" (referência {node['reference_date']})"
+    if node.get("quote"):
+        rendered += f'\n    trecho: "{node["quote"]}"'
+    return rendered
+
+
+_LEAF_KEYS = {"value", "type", "quote", "confidence", "source", "amount_brl",
+              "reference_date", "currency"}
+
+
+def _is_leaf(node: dict) -> bool:
+    """Folha é o bloco `{value, quote, confidence, source}` e suas variantes.
+
+    Não basta olhar as chaves: `appraisal` tem só `value`, e o valor dela é
+    outro objeto monetário. Tratá-la como folha imprimia o dicionário Python
+    cru na cara do modelo — chaves em inglês incluídas, que é justamente o que
+    esta função existe para evitar.
+    """
+    if not node or set(node) - _LEAF_KEYS:
+        return False
+    return not any(isinstance(v, (dict, list)) for v in node.values())
+
+
+# Ordem de leitura, e não a ordem em que o modelo devolveu o JSON: quem lê quer
+# saber o que é o imóvel antes de saber o que pode dar errado com ele.
+_SECTION_ORDER = [
+    "procedure", "court_case", "property", "auction", "appraisal", "occupancy",
+    "encumbrances", "debts", "auctioneer_fee", "payment", "risks", "gaps",
+]
+
+# Detalhe de máquina: não ajuda quem lê e ocupa espaço no contexto.
+_INTERNAL = {"datajud_alias", "valid", "source", "cited_numbers"}
+
+
+def ficha_to_text(ficha: dict, path: str = "", depth: int = 0) -> str:
+    """A ficha inteira em português, com os trechos que a sustentam.
+
+    Formato de texto e não de JSON: o modelo lê melhor, gasta menos token e —
+    o que importa — não tem nenhuma chave em inglês para repetir ou traduzir
+    errado.
+    """
+    if depth > 6 or not isinstance(ficha, dict):
+        return ""
+
+    linhas: list[str] = []
+    recuo = "  " * depth
+    ordem = {name: i for i, name in enumerate(_SECTION_ORDER)}
+    entradas = sorted(ficha.items(), key=lambda kv: ordem.get(kv[0], len(ordem)))
+
+    for key, node in entradas:
+        if key.startswith("_") or key in _INTERNAL:
+            continue
+        caminho = f"{path}.{key}" if path else key
+
+        # `quote` aparece solto dentro de blocos compostos e, sem este caso,
+        # herdava o rótulo do pai — "Primeira praça: <texto do trecho>".
+        if key == "quote" and isinstance(node, str) and node.strip():
+            linhas.append(f'{recuo}trecho: "{node}"')
+            continue
+
+        titulo = label(caminho)
+
+        if isinstance(node, dict) and _is_leaf(node):
+            rendered = _render_leaf(node)
+            if rendered:
+                linhas.append(f"{recuo}{titulo}: {rendered}")
+        elif isinstance(node, dict):
+            interior = ficha_to_text(node, caminho, depth + 1)
+            if interior:
+                linhas.append(f"{recuo}{titulo}:")
+                linhas.append(interior)
+        elif isinstance(node, list):
+            if not node:
+                continue
+            linhas.append(f"{recuo}{titulo}:")
+            for item in node:
+                if isinstance(item, dict):
+                    partes = []
+                    for k, v in item.items():
+                        rendered = _render_value(v)
+                        if rendered is None:
+                            continue
+                        rotulo = _ITEM_LABELS.get(k, label(k))
+                        partes.append(f"{rotulo}: {rendered}")
+                    if partes:
+                        linhas.append(f"{recuo}  - " + "; ".join(partes))
+                else:
+                    rendered = _render_value(item)
+                    if rendered:
+                        linhas.append(f"{recuo}  - {rendered}")
+        else:
+            rendered = _render_value(node)
+            if rendered:
+                linhas.append(f"{recuo}{titulo}: {rendered}")
+
+    return "\n".join(linhas)
+
+
+# Chaves que só aparecem dentro de listas, e por isso não estão em LABELS.
+_ITEM_LABELS = {
+    "type": "tipo",
+    "description": "descrição",
+    "severity": "gravidade",
+    "quote": "trecho",
+    "registry_entry": "ato na matrícula",
+    "creditor": "credor",
+    "extinguished_by_sale": "extingue-se com a venda",
+    "field": "campo",
+    "why_it_matters": "por que importa",
+    "how_to_verify": "como verificar",
+}
+
+
 # ─── Composição ─────────────────────────────────────────────────────────────
 
 def _rank_gaps(gaps: list[dict], max_items: int) -> list[dict]:
