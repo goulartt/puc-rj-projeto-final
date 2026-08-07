@@ -289,7 +289,21 @@ _LOT_KIND = re.compile(r"(?i)\b(" + "|".join(_LOT_KINDS) + r")\b")
 _LOT_CITY = re.compile(r"(?i)Comarca de\s+([A-ZÁ-Ú][\wÀ-ú\s]{2,28}?/[A-Z]{2})")
 # Janela antes da matrícula onde o edital descreve o imóvel. Depois dela vem o
 # cartório e o próximo lote.
-LOT_WINDOW = 420
+#
+# 420 era curto: num edital real a descrição termina em "fração ideal no
+# terreno … vaga na garagem", e o "Apartamento nº 144" que abre o parágrafo
+# ficava de fora. O imóvel virava "Terreno" na pergunta de confirmação.
+LOT_WINDOW = 900
+
+# Ocorrências que parecem tipo de imóvel e não são. `fração ideal no terreno`
+# descreve a cota do condomínio; `vaga na garagem` é acessório do apartamento.
+# Sem isto, um apartamento em prédio é classificado pela descrição do prédio.
+_NOT_A_KIND = re.compile(
+    r"(?i)(fra[çc][ãa]o ideal[^.]{0,40}terreno"
+    r"|[áa]rea[^.]{0,20}terreno"
+    r"|vaga[^.]{0,40}garagem"
+    r"|terreno e coisas de uso comum)"
+)
 
 
 def lots(text: str) -> list[dict[str, Any]]:
@@ -305,10 +319,24 @@ def lots(text: str) -> list[dict[str, Any]]:
     flat = _flatten(text)
     by_registry: dict[str, dict[str, Any]] = {}
 
-    for found in property_registry(text):
+    # Onde cada matrícula aparece. A janela de um lote não pode passar da
+    # matrícula anterior: com 900 caracteres ela sangrava para o lote de cima e
+    # um terreno herdava o "apartamento" do vizinho na lista de escolha.
+    encontradas = list(property_registry(text))
+    posicoes = sorted({flat.find(f.raw) for f in encontradas} - {-1})
+
+    for found in encontradas:
         position = flat.find(found.raw)
-        window = flat[max(0, position - LOT_WINDOW):position] if position >= 0 else ""
-        matches = {m.lower() for m in _LOT_KIND.findall(window)}
+        if position < 0:
+            window = ""
+        else:
+            anteriores = [p for p in posicoes if p < position]
+            limite = max(position - LOT_WINDOW, anteriores[-1] if anteriores else 0)
+            window = flat[limite:position]
+        # Remove os trechos em que a palavra descreve outra coisa antes de
+        # procurar o tipo.
+        clean = _NOT_A_KIND.sub(" ", window)
+        matches = {m.lower() for m in _LOT_KIND.findall(clean)}
         kind = next((k for k in _LOT_KINDS
                      if any(re.fullmatch(k, m, re.IGNORECASE) for m in matches)), None)
         city = _LOT_CITY.findall(window)

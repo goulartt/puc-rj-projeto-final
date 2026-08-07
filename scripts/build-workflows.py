@@ -1458,6 +1458,10 @@ if (!verdict.understood) {
 return [{ json: {
   proceed: true,
   chat_id: routed.chat_id,
+  // Como o imovel foi descrito na pergunta. Repetir isso no aviso deixa a
+  // pessoa conferir que a escolha foi entendida — dois minutos depois seria
+  // tarde para descobrir que o bot leu outro numero.
+  lot_label: (verdict.options || [])[verdict.index - 1] || null,
   file_name: pending.file_name,
   sha256: pending.sha256,
   markdown: pending.markdown,
@@ -1466,6 +1470,28 @@ return [{ json: {
   // ignorar os demais seria instrucao sobre algo que nao existe.
   lot: (pending.lots || []).length > 1 ? verdict.lot : null,
 } }];
+"""
+
+CHAT_CHOICE_ACK = CHAT_FORMAT_HELPERS + """
+// Confirma o que foi entendido e diz quanto tempo leva.
+//
+// Entre o "sim" e a ficha ha cerca de dois minutos de silencio. E o mesmo
+// buraco do envio do PDF, agora no segundo turno: sem retorno, a pessoa nao
+// sabe se a resposta dela foi lida.
+const decision = $input.first().json;
+const NL = String.fromCharCode(10);
+
+const alvo = decision.lot_label
+  ? 'Vou analisar ' + bold(esc(decision.lot_label)) + '.'
+  : 'Vou analisar este edital.';
+
+return [{ json: { chat_id: decision.chat_id, text: [
+  'Entendido. ' + alvo,
+  '',
+  'Estou lendo o documento inteiro e montando a ficha com prazos, valores,',
+  'ônus, débitos e o que o edital não informa. Leva cerca de dois minutos —',
+  'aviso aqui quando terminar.',
+].join(NL) } }];
 """
 
 CHAT_QUESTION_ACK = CHAT_FORMAT_HELPERS + """
@@ -1860,6 +1886,12 @@ def build_chat() -> dict:
                                 "leftValue": "={{ $json.proceed }}"}],
                 "combinator": "and"}}),
         _telegram_send("Repetir pergunta de lote", [960, 820]),
+        # A POSICAO IMPORTA: com `executionOrder: v1` o n8n resolve empates
+        # entre ramos pela coordenada, e y menor roda antes. Em [960, 620] o
+        # aviso sai antes da extracao; mais abaixo, chegaria junto com a ficha.
+        node("Aviso de analise", "n8n-nodes-base.code", 2, [960, 620],
+             {"jsCode": CHAT_CHOICE_ACK}),
+        _telegram_send("Responder aviso de analise", [1160, 620]),
         node("Chamar ingestao", "n8n-nodes-base.executeWorkflow", 1.3, [960, 700], {
             "workflowId": {"__rl": True, "value": INGEST_ID, "mode": "id"},
             "options": {"waitForSubWorkflow": True},
@@ -1987,8 +2019,10 @@ def build_chat() -> dict:
         **chain("Chamar preparacao", "Descrever lotes", "Perguntar qual imovel",
                 "Responder pergunta de lote"),
         **chain("Ler escolha", "Decidir escolha", "Entendeu a escolha?"),
+        **chain("Aviso de analise", "Responder aviso de analise"),
         "Entendeu a escolha?": {"main": [
-            [{"node": "Chamar ingestao", "type": "main", "index": 0}],
+            [{"node": "Aviso de analise", "type": "main", "index": 0},
+             {"node": "Chamar ingestao", "type": "main", "index": 0}],
             [{"node": "Repetir pergunta de lote", "type": "main", "index": 0}],
         ]},
         **chain("Chamar ingestao", "Limpar pendente", "Buscar situacao do processo",

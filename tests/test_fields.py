@@ -197,6 +197,34 @@ def test_tipo_do_imovel_vence_o_termo_mais_especifico() -> None:
     assert fields.lots(texto)[0]["kind"] == "Apartamento"
 
 
+def test_fracao_ideal_no_terreno_nao_e_o_tipo_do_imovel() -> None:
+    """`fração ideal no terreno` descreve a cota do condomínio.
+
+    Num edital real o apartamento saía como "Terreno" na pergunta de
+    confirmação, enquanto a ficha dizia "Apartamento" — a pessoa via os dois na
+    mesma conversa.
+    """
+    texto = (
+        "Apartamento nº 144, no 14º andar do Edifício Charmant, com área "
+        "privativa de 66,02m², a fração ideal de 1,7857% no terreno e coisas "
+        "de uso comum, e o direito ao uso de uma vaga indeterminada na garagem "
+        "coletiva. Objeto da matrícula nº 106.233 do 4º Registro de Imóveis"
+    )
+    assert fields.lots(texto)[0]["kind"] == "Apartamento"
+
+
+def test_a_janela_de_um_lote_nao_invade_o_anterior() -> None:
+    """Com janela larga, um terreno herdava o "apartamento" do lote de cima."""
+    texto = (
+        "Lote 1: Apartamento nº 10, edifício com elevador, área de 80m², "
+        "objeto da matrícula nº 81.909 do Registro de Imóveis. "
+        "Lote 2: objeto da matrícula nº 82.003 do Registro de Imóveis."
+    )
+    tipos = [lot["kind"] for lot in fields.lots(texto)]
+    assert tipos[0] == "Apartamento"
+    assert tipos[1] != "Apartamento"
+
+
 def test_lote_descreve_valor_e_comarca_quando_o_edital_traz() -> None:
     texto = ("Casa avaliada em R$ 75.000,00, na Comarca de Londrina/PR, objeto "
              "da matrícula nº 9.937 do Cartório de Registro de Imóveis")

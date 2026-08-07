@@ -383,7 +383,7 @@
     },
     {
       "parameters": {
-        "jsCode": "\n// Formatacao das mensagens em HTML, e nao no Markdown legado do Telegram.\n//\n// O Markdown legado quebra com um unico caractere desemparelhado, e a mensagem\n// inteira e recusada com 'Bad request' — a resposta some sem chegar a pessoa e\n// sem erro visivel na conversa. Aconteceu de verdade: a ficha trazia o campo\n// `debts.enforced_claim` na secao de lacunas, e aquele underscore solto\n// derrubou o envio. Como os nomes de campo do schema sao snake_case, a falha\n// era sistematica: quase toda ficha com lacunas quebraria.\n//\n// Em HTML o escape resolve na origem. Escapamos tudo o que e dinamico e so\n// depois envolvemos com as tags que nos mesmos geramos, entao nao ha como\n// produzir marcacao desbalanceada.\n\nfunction esc(value) {\n  return String(value == null ? '' : value)\n    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n}\n\nfunction bold(value) { return '<b>' + esc(value) + '</b>'; }\n\n// O modelo responde em Markdown por habito, e em HTML isso apareceria literal\n// como `**negrito**`. Convertemos os poucos casos que ele usa, sempre DEPOIS\n// do escape — os pares abaixo sao gerados aqui e por isso sempre fecham.\nfunction fromMarkdown(text) {\n  return esc(text)\n    .replace(/^\\s*#{1,6}\\s*(.+)$/gm, (m, title) => '<b>' + title.trim() + '</b>')\n    .replace(/\\*\\*([^*\\n]+)\\*\\*/g, '<b>$1</b>')\n    .replace(/(^|[^*])\\*([^*\\n]+)\\*(?!\\*)/g, '$1<i>$2</i>')\n    .replace(/`([^`\\n]+)`/g, '<code>$1</code>')\n    .replace(/^\\s*[-*]\\s+/gm, '• ');\n}\n\n// O Telegram corta em 4096 caracteres. Truncar com aviso e melhor que a\n// mensagem sumir; o corte respeita a ultima quebra de linha para nao partir\n// uma tag ao meio.\nfunction fit(text) {\n  if (text.length <= 3900) return text;\n  const cut = text.slice(0, 3900);\n  const at = cut.lastIndexOf(String.fromCharCode(10));\n  return (at > 3000 ? cut.slice(0, at) : cut) +\n         String.fromCharCode(10, 10) + '<i>(resposta truncada)</i>';\n}\n\n// Traduz a leitura da escolha em \"extrai\" ou \"pergunta de novo\".\nconst verdict = $input.first().json;\nconst routed = $('Resolver pendente').all()\n  .filter((i) => i.json.route === 'lot_choice')[0].json;\nconst pending = routed.pending;\nconst NL = String.fromCharCode(10);\n\nif (!verdict.understood) {\n  const opcoes = (verdict.options || [])\n    .map((o, i) => (i + 1) + '. ' + esc(o)).join(NL);\n  const pedido = (pending.lots || []).length > 1\n    ? 'Não entendi qual imóvel você quer.' + NL + NL + opcoes + NL + NL +\n      'Responda com o número ou com a matrícula.'\n    : 'Responda ' + bold('sim') + ' para eu analisar este imóvel.';\n  return [{ json: { proceed: false, chat_id: routed.chat_id, text: pedido } }];\n}\n\n// Segue para a extracao com tudo que a preparacao ja produziu: o Markdown nao\n// e reconvertido e a pessoa nao reenvia o PDF.\nreturn [{ json: {\n  proceed: true,\n  chat_id: routed.chat_id,\n  file_name: pending.file_name,\n  sha256: pending.sha256,\n  markdown: pending.markdown,\n  deterministic: pending.deterministic,\n  // `lot` so quando ha o que desambiguar: com um imovel so, instruir o modelo a\n  // ignorar os demais seria instrucao sobre algo que nao existe.\n  lot: (pending.lots || []).length > 1 ? verdict.lot : null,\n} }];\n"
+        "jsCode": "\n// Formatacao das mensagens em HTML, e nao no Markdown legado do Telegram.\n//\n// O Markdown legado quebra com um unico caractere desemparelhado, e a mensagem\n// inteira e recusada com 'Bad request' — a resposta some sem chegar a pessoa e\n// sem erro visivel na conversa. Aconteceu de verdade: a ficha trazia o campo\n// `debts.enforced_claim` na secao de lacunas, e aquele underscore solto\n// derrubou o envio. Como os nomes de campo do schema sao snake_case, a falha\n// era sistematica: quase toda ficha com lacunas quebraria.\n//\n// Em HTML o escape resolve na origem. Escapamos tudo o que e dinamico e so\n// depois envolvemos com as tags que nos mesmos geramos, entao nao ha como\n// produzir marcacao desbalanceada.\n\nfunction esc(value) {\n  return String(value == null ? '' : value)\n    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n}\n\nfunction bold(value) { return '<b>' + esc(value) + '</b>'; }\n\n// O modelo responde em Markdown por habito, e em HTML isso apareceria literal\n// como `**negrito**`. Convertemos os poucos casos que ele usa, sempre DEPOIS\n// do escape — os pares abaixo sao gerados aqui e por isso sempre fecham.\nfunction fromMarkdown(text) {\n  return esc(text)\n    .replace(/^\\s*#{1,6}\\s*(.+)$/gm, (m, title) => '<b>' + title.trim() + '</b>')\n    .replace(/\\*\\*([^*\\n]+)\\*\\*/g, '<b>$1</b>')\n    .replace(/(^|[^*])\\*([^*\\n]+)\\*(?!\\*)/g, '$1<i>$2</i>')\n    .replace(/`([^`\\n]+)`/g, '<code>$1</code>')\n    .replace(/^\\s*[-*]\\s+/gm, '• ');\n}\n\n// O Telegram corta em 4096 caracteres. Truncar com aviso e melhor que a\n// mensagem sumir; o corte respeita a ultima quebra de linha para nao partir\n// uma tag ao meio.\nfunction fit(text) {\n  if (text.length <= 3900) return text;\n  const cut = text.slice(0, 3900);\n  const at = cut.lastIndexOf(String.fromCharCode(10));\n  return (at > 3000 ? cut.slice(0, at) : cut) +\n         String.fromCharCode(10, 10) + '<i>(resposta truncada)</i>';\n}\n\n// Traduz a leitura da escolha em \"extrai\" ou \"pergunta de novo\".\nconst verdict = $input.first().json;\nconst routed = $('Resolver pendente').all()\n  .filter((i) => i.json.route === 'lot_choice')[0].json;\nconst pending = routed.pending;\nconst NL = String.fromCharCode(10);\n\nif (!verdict.understood) {\n  const opcoes = (verdict.options || [])\n    .map((o, i) => (i + 1) + '. ' + esc(o)).join(NL);\n  const pedido = (pending.lots || []).length > 1\n    ? 'Não entendi qual imóvel você quer.' + NL + NL + opcoes + NL + NL +\n      'Responda com o número ou com a matrícula.'\n    : 'Responda ' + bold('sim') + ' para eu analisar este imóvel.';\n  return [{ json: { proceed: false, chat_id: routed.chat_id, text: pedido } }];\n}\n\n// Segue para a extracao com tudo que a preparacao ja produziu: o Markdown nao\n// e reconvertido e a pessoa nao reenvia o PDF.\nreturn [{ json: {\n  proceed: true,\n  chat_id: routed.chat_id,\n  // Como o imovel foi descrito na pergunta. Repetir isso no aviso deixa a\n  // pessoa conferir que a escolha foi entendida — dois minutos depois seria\n  // tarde para descobrir que o bot leu outro numero.\n  lot_label: (verdict.options || [])[verdict.index - 1] || null,\n  file_name: pending.file_name,\n  sha256: pending.sha256,\n  markdown: pending.markdown,\n  deterministic: pending.deterministic,\n  // `lot` so quando ha o que desambiguar: com um imovel so, instruir o modelo a\n  // ignorar os demais seria instrucao sobre algo que nao existe.\n  lot: (pending.lots || []).length > 1 ? verdict.lot : null,\n} }];\n"
       },
       "id": "decidir-escolha",
       "name": "Decidir escolha",
@@ -436,6 +436,32 @@
       "position": [
         960,
         820
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Formatacao das mensagens em HTML, e nao no Markdown legado do Telegram.\n//\n// O Markdown legado quebra com um unico caractere desemparelhado, e a mensagem\n// inteira e recusada com 'Bad request' — a resposta some sem chegar a pessoa e\n// sem erro visivel na conversa. Aconteceu de verdade: a ficha trazia o campo\n// `debts.enforced_claim` na secao de lacunas, e aquele underscore solto\n// derrubou o envio. Como os nomes de campo do schema sao snake_case, a falha\n// era sistematica: quase toda ficha com lacunas quebraria.\n//\n// Em HTML o escape resolve na origem. Escapamos tudo o que e dinamico e so\n// depois envolvemos com as tags que nos mesmos geramos, entao nao ha como\n// produzir marcacao desbalanceada.\n\nfunction esc(value) {\n  return String(value == null ? '' : value)\n    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');\n}\n\nfunction bold(value) { return '<b>' + esc(value) + '</b>'; }\n\n// O modelo responde em Markdown por habito, e em HTML isso apareceria literal\n// como `**negrito**`. Convertemos os poucos casos que ele usa, sempre DEPOIS\n// do escape — os pares abaixo sao gerados aqui e por isso sempre fecham.\nfunction fromMarkdown(text) {\n  return esc(text)\n    .replace(/^\\s*#{1,6}\\s*(.+)$/gm, (m, title) => '<b>' + title.trim() + '</b>')\n    .replace(/\\*\\*([^*\\n]+)\\*\\*/g, '<b>$1</b>')\n    .replace(/(^|[^*])\\*([^*\\n]+)\\*(?!\\*)/g, '$1<i>$2</i>')\n    .replace(/`([^`\\n]+)`/g, '<code>$1</code>')\n    .replace(/^\\s*[-*]\\s+/gm, '• ');\n}\n\n// O Telegram corta em 4096 caracteres. Truncar com aviso e melhor que a\n// mensagem sumir; o corte respeita a ultima quebra de linha para nao partir\n// uma tag ao meio.\nfunction fit(text) {\n  if (text.length <= 3900) return text;\n  const cut = text.slice(0, 3900);\n  const at = cut.lastIndexOf(String.fromCharCode(10));\n  return (at > 3000 ? cut.slice(0, at) : cut) +\n         String.fromCharCode(10, 10) + '<i>(resposta truncada)</i>';\n}\n\n// Confirma o que foi entendido e diz quanto tempo leva.\n//\n// Entre o \"sim\" e a ficha ha cerca de dois minutos de silencio. E o mesmo\n// buraco do envio do PDF, agora no segundo turno: sem retorno, a pessoa nao\n// sabe se a resposta dela foi lida.\nconst decision = $input.first().json;\nconst NL = String.fromCharCode(10);\n\nconst alvo = decision.lot_label\n  ? 'Vou analisar ' + bold(esc(decision.lot_label)) + '.'\n  : 'Vou analisar este edital.';\n\nreturn [{ json: { chat_id: decision.chat_id, text: [\n  'Entendido. ' + alvo,\n  '',\n  'Estou lendo o documento inteiro e montando a ficha com prazos, valores,',\n  'ônus, débitos e o que o edital não informa. Leva cerca de dois minutos —',\n  'aviso aqui quando terminar.',\n].join(NL) } }];\n"
+      },
+      "id": "aviso-de-analise",
+      "name": "Aviso de analise",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        620
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "return $input.all();"
+      },
+      "id": "responder-aviso-de-analise",
+      "name": "Responder aviso de analise",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1160,
+        620
       ]
     },
     {
@@ -1090,9 +1116,25 @@
         ]
       ]
     },
+    "Aviso de analise": {
+      "main": [
+        [
+          {
+            "node": "Responder aviso de analise",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
     "Entendeu a escolha?": {
       "main": [
         [
+          {
+            "node": "Aviso de analise",
+            "type": "main",
+            "index": 0
+          },
           {
             "node": "Chamar ingestao",
             "type": "main",
