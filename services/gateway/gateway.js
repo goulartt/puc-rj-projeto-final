@@ -241,6 +241,38 @@ function anthropicText(content) {
 }
 
 /**
+ * Remove o raciocínio que veio no corpo da resposta.
+ *
+ * O normal é o provedor separar: o Ollama devolve `message.reasoning` e deixa
+ * `content` limpo, e a Messages API manda o raciocínio em bloco próprio. Mas a
+ * separação depende de o modelo abrir o bloco com `<think>`, e isso é geração,
+ * não protocolo — observado em produção com o qwen3, uma resposta veio com um
+ * token de lixo (`栋`) no lugar da abertura. Sem a abertura o Ollama não
+ * reconheceu o bloco, e o raciocínio inteiro — em inglês, discutindo o que
+ * responder — foi entregue à pessoa como se fosse a resposta.
+ *
+ * O fechamento sobreviveu, e é nele que dá para confiar: o que estiver antes
+ * de um `</think>` é raciocínio, tenha a abertura casado ou não.
+ */
+function stripReasoning(text) {
+  if (typeof text !== 'string' || !text) return text;
+
+  const closing = text.toLowerCase().lastIndexOf('</think>');
+  const cleaned = (closing >= 0
+    ? text.slice(closing + '</think>'.length)
+    // Sem fechamento: ou nao ha raciocinio nenhum, ou a resposta foi cortada
+    // no meio dele. Uma abertura solta significa o segundo caso, e o que vem
+    // depois dela e raciocinio ate onde o texto acabou.
+    : text.replace(/<think\b[^>]*>[\s\S]*$/i, '')
+  ).trim();
+
+  // Resposta truncada dentro do raciocínio nao deixa nada depois do
+  // fechamento. Devolver o raciocínio seria o defeito de novo, e devolver
+  // texto vazio deixa o fluxo chamador tratar como resposta que nao veio.
+  return cleaned;
+}
+
+/**
  * Normaliza a resposta para um formato único.
  *
  * Devolve sempre {text, parsed, usage:{input,output,cached}, finishReason,
@@ -270,7 +302,7 @@ function normalizeResponse(provider, raw) {
   const choice = (raw.choices && raw.choices[0]) || {};
   const usage = raw.usage || {};
   return {
-    text: (choice.message && choice.message.content) || '',
+    text: stripReasoning((choice.message && choice.message.content) || ''),
     parsed: null,
     usage: {
       input: usage.prompt_tokens || 0,

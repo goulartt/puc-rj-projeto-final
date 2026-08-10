@@ -227,6 +227,47 @@ test('anthropic: junta blocos de texto e descarta thinking', () => {
   assert.equal(r.text, 'parte um. parte dois.');
 });
 
+// Raciocinio vazando no corpo da resposta. O provedor normalmente separa, mas
+// a separacao depende de o modelo abrir o bloco com `<think>` — e isso e
+// geracao, nao protocolo.
+
+test('openai: descarta o raciocinio delimitado que veio no corpo', () => {
+  const r = gw.normalizeResponse('openai', {
+    choices: [{ message: { content: '<think>penso em ingles</think>\n\nBrasília' } }],
+    usage: {},
+  });
+  assert.equal(r.text, 'Brasília');
+});
+
+test('openai: descarta o raciocinio mesmo sem a abertura casada', () => {
+  // Observado em producao: o qwen3 emitiu um token de lixo no lugar de
+  // `<think>`, o Ollama nao reconheceu o bloco e mandou tudo em `content`. A
+  // pessoa recebeu o raciocinio em ingles como se fosse a resposta.
+  const r = gw.normalizeResponse('openai', {
+    choices: [{ message: {
+      content: '栋\n\nOkay, the user is asking about the case.\n</think>\n\nO processo segue ativo.',
+    } }],
+    usage: {},
+  });
+  assert.equal(r.text, 'O processo segue ativo.');
+});
+
+test('openai: resposta truncada dentro do raciocinio vira texto vazio, nao raciocinio', () => {
+  const r = gw.normalizeResponse('openai', {
+    choices: [{ message: { content: '<think>comecei a pensar e o limite chegou' } }],
+    usage: {},
+  });
+  assert.equal(r.text, '');
+});
+
+test('openai: resposta sem raciocinio nenhum passa intacta', () => {
+  const r = gw.normalizeResponse('openai', {
+    choices: [{ message: { content: 'A comissão é de 5% e o texto fala de <b>ônus</b>.' } }],
+    usage: {},
+  });
+  assert.equal(r.text, 'A comissão é de 5% e o texto fala de <b>ônus</b>.');
+});
+
 test('anthropic: recusa por classificador e sinalizada, nao confundida com resposta vazia', () => {
   const r = gw.normalizeResponse('anthropic', { content: [], stop_reason: 'refusal', usage: {} });
   assert.equal(r.refusal, true);
