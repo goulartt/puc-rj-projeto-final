@@ -33,8 +33,11 @@ docker compose up -d --force-recreate cloudflared >/dev/null 2>&1
 
 url=""
 for _ in $(seq 1 30); do
+  # `|| true`: nos primeiros segundos o log ainda nao tem a URL, e o grep vazio
+  # sai com 1 — que sob `set -e` + `pipefail` mataria o script antes do laco
+  # sequer esperar o tunel subir.
   url=$(docker compose logs cloudflared --since 3m 2>&1 \
-        | grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' | tail -1)
+        | grep -oE 'https://[a-z0-9-]+\.trycloudflare\.com' | tail -1) || true
   if [ -n "$url" ] && [ "$(curl -s -o /dev/null -w '%{http_code}' --max-time 12 "$url/healthz")" = "200" ]; then
     break
   fi
@@ -71,11 +74,19 @@ until docker compose exec -T n8n sh -c 'wget -qO- --timeout=3 http://localhost:5
   sleep 3
 done
 
-registered=$(curl -sS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo" \
-             | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"].get("url",""))')
+# O `/healthz` responde antes de o n8n ativar os gatilhos, entao perguntar uma
+# vez so pega o webhook ainda nao registrado e acusa falha onde nao ha.
+registered=""
+for _ in $(seq 1 20); do
+  registered=$(curl -sS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo" \
+               | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"].get("url",""))') || true
+  [ -n "$registered" ] && break
+  sleep 3
+done
 
 if [ -z "$registered" ]; then
-  docker compose logs n8n --since 2m 2>&1 | grep -iE "Chat no Telegram|did fail" | tail -5
+  # `|| true`: sem casamento o grep sai com 1 e engoliria o `die` abaixo.
+  docker compose logs n8n --since 2m 2>&1 | grep -iE "Chat no Telegram|did fail" | tail -5 || true
   die "o Telegram nao aceitou o webhook"
 fi
 
