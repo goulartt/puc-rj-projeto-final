@@ -136,11 +136,20 @@ def parse_lot_choice(text: str, lots: list[dict]) -> dict[str, Any]:
     """
     normalized = _normalize(text or "").strip()
     total = len(lots or [])
-    if not total:
-        return {"understood": False, "index": None, "reason": "sem lotes"}
 
     if _NEGATIVE.match(normalized):
         return {"understood": False, "index": None, "reason": "recusou"}
+
+    # Sem matrícula legível não há lista, e o fluxo pergunta "analiso assim
+    # mesmo?". Recusar o "sim" aqui fazia a pergunta se repetir para sempre: o
+    # bot pedia uma confirmação que ele mesmo não sabia aceitar. Não há lote a
+    # escolher, então `index` fica nulo e a extração segue com o documento
+    # inteiro — que é exatamente o que a pergunta prometeu.
+    if not total:
+        if _AFFIRMATIVE.match(normalized):
+            return {"understood": True, "index": None,
+                    "reason": "confirmou sem lote"}
+        return {"understood": False, "index": None, "reason": "sem lotes"}
 
     # "sim" só resolve quando não há o que desambiguar.
     if _AFFIRMATIVE.match(normalized):

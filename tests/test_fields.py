@@ -153,6 +153,19 @@ def test_matricula_sem_contexto_de_cartorio_e_ignorada() -> None:
     assert fields.property_registry("matrícula nº 45.678 do clube recreativo") == []
 
 
+def test_matricula_imobiliaria_com_dois_pontos() -> None:
+    """Formato de edital real do TJSP, e o separador que faltava.
+
+    Sem os dois-pontos o documento inteiro ficava sem matrícula, a lista de
+    lotes vinha vazia e a conversa travava na confirmação do imóvel.
+    """
+    texto = (
+        "MATRÍCULA IMOBILIÁRIA: 83.276 do 4º Oficial de Registro de Imóveis "
+        "de São Paulo. INSCRIÇÃO MUNICIPAL: 299.098.0288-9"
+    )
+    assert [a.value for a in fields.property_registry(texto)] == ["83.276"]
+
+
 def test_edital_com_as_duas_matriculas_devolve_so_a_do_imovel() -> None:
     texto = (
         "Leiloeiro matriculado na Junta Comercial sob o nº 798. "

@@ -1447,10 +1447,16 @@ const NL = String.fromCharCode(10);
 if (!verdict.understood) {
   const opcoes = (verdict.options || [])
     .map((o, i) => (i + 1) + '. ' + esc(o)).join(NL);
-  const pedido = (pending.lots || []).length > 1
+  // Tres situacoes distintas, e repetir a mesma frase nas tres foi o que
+  // deixou a conversa presa: sem matricula legivel nao ha "este imovel" para
+  // apontar, e a pessoa nao tinha como saber o que responder.
+  const total = (pending.lots || []).length;
+  const pedido = total > 1
     ? 'Não entendi qual imóvel você quer.' + NL + NL + opcoes + NL + NL +
       'Responda com o número ou com a matrícula.'
-    : 'Responda ' + bold('sim') + ' para eu analisar este imóvel.';
+    : total === 1
+    ? 'Responda ' + bold('sim') + ' para eu analisar este imóvel.'
+    : 'Responda ' + bold('sim') + ' para eu analisar o documento assim mesmo.';
   return [{ json: { proceed: false, chat_id: routed.chat_id, text: pedido } }];
 }
 

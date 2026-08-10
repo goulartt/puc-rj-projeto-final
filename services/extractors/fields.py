@@ -212,8 +212,13 @@ def _time_after(text: str, position: int) -> str | None:
 # Exige o substantivo `matrícula`, e não `matriculado`: o mesmo edital diz
 # "matriculado na Junta Comercial ... sob o nº 798" a respeito do leiloeiro,
 # e casar isso poria o registro do leiloeiro no campo do imóvel.
+# O separador entre o substantivo e o número varia de edital para edital:
+# `matrícula nº 83.276`, `matrícula 83.276` e `MATRÍCULA IMOBILIÁRIA: 83.276`
+# são a mesma coisa. Sem aceitar os dois-pontos, o terceiro formato não casava
+# e o edital inteiro ficava sem matrícula — o que deixava a conversa presa numa
+# confirmação de lote que nunca podia ser aceita.
 _REGISTRY = re.compile(
-    r"matr[íi]cula\s*(?:imobili[áa]ria\s*)?n?[º°.]?\s*([\d][\d.\-/]*\d)",
+    r"matr[íi]cula\s*(?:imobili[áa]ria\s*)?n?[º°.]?\s*:?\s*([\d][\d.\-/]*\d)",
     re.IGNORECASE,
 )
 _REGISTRY_OFFICE = re.compile(

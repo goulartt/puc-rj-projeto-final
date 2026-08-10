@@ -265,7 +265,9 @@ def lot_choice(payload: dict = Body(...)) -> JSONResponse:
         raise HTTPException(status_code=400, detail="`lots` deve ser uma lista")
 
     verdict = scope.parse_lot_choice(payload.get("text") or "", lots)
-    chosen = lots[verdict["index"] - 1] if verdict["understood"] else None
+    # `index` nulo com `understood` verdadeiro é o edital sem matrícula legível:
+    # a pessoa confirmou a análise, mas não há lote a apontar.
+    chosen = lots[verdict["index"] - 1] if verdict["index"] else None
     return JSONResponse({**verdict, "lot": chosen,
                          "options": presentation.describe_lots(lots)})
 

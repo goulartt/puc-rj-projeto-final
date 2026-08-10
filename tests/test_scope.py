@@ -178,3 +178,20 @@ def test_recusa_e_reconhecida_como_recusa() -> None:
     resultado = scope.parse_lot_choice("nenhum", LOTES)
     assert resultado["understood"] is False
     assert resultado["reason"] == "recusou"
+
+
+def test_sim_sem_lote_algum_e_aceito() -> None:
+    """Sem matrícula legível o fluxo pergunta "analiso assim mesmo?".
+
+    Recusar o "sim" aqui prendia a conversa: o bot repetia a pergunta a cada
+    confirmação, para sempre, porque pedia algo que não sabia aceitar.
+    """
+    for texto in ("sim", "SIM", "pode ser", "ok"):
+        resultado = scope.parse_lot_choice(texto, [])
+        assert resultado["understood"] is True, texto
+        assert resultado["index"] is None
+
+
+def test_sem_lote_algum_ainda_recusa_o_que_nao_e_confirmacao() -> None:
+    assert scope.parse_lot_choice("nao", [])["reason"] == "recusou"
+    assert scope.parse_lot_choice("sei la", [])["understood"] is False
