@@ -15,117 +15,118 @@ Trabalho apresentado ao curso [GenAI e LLM MASTER](https://ica.ele.puc-rio.br/cu
 
 Quem arremata um imóvel em leilão assina um edital de dezenas de cláusulas
 escrito para advogados e costuma descobrir o que aceitou depois de pagar. Este
-trabalho apresenta o Arremata AI, um assistente conversacional no Telegram,
-orquestrado em n8n, que recebe o PDF do edital e o torna legível para um
-comprador sem formação jurídica: explica o que o documento diz, cita o trecho
-de onde tirou cada afirmação e aponta o que o edital **não** informa. O
-assistente não opina se vale a pena arrematar, não estima valor de mercado e
-não dá orientação jurídica.
+trabalho apresenta o Arremata AI, um assistente no Telegram, orquestrado em
+n8n, que recebe o PDF do edital e o explica a um comprador sem formação
+jurídica. Para cada afirmação, o assistente cita o trecho do edital de onde a
+tirou, e também aponta o que o documento deixa de informar. Ele não opina se
+vale a pena arrematar, não estima valor de mercado e não dá orientação
+jurídica.
 
-A arquitetura separa o processamento em três estágios. No primeiro, executado
-uma vez por edital, o PDF é convertido em Markdown pelo Docling, extratores
-determinísticos leem número de processo (com dígito verificador ISO 7064),
-valores, datas e matrícula, e um modelo de linguagem de maior capacidade produz
-uma ficha estruturada, validada contra JSON Schema, em que cada campo carrega a
-citação literal que o sustenta. No segundo, quando há número de processo
-válido, a API pública DataJud do CNJ fornece os movimentos processuais. No
-terceiro, executado a cada pergunta, um modelo pequeno rodando localmente
-responde a partir da ficha, e não do documento inteiro, depois de um filtro
-determinístico de escopo. Todas as chamadas de modelo passam por um gateway
-que torna o provedor trocável por variável de ambiente e impõe um teto de custo.
+O processamento é dividido em três estágios. No primeiro, executado uma vez
+por edital, o Docling converte o PDF em Markdown, extratores determinísticos
+leem número de processo (com dígito verificador ISO 7064), valores, datas e
+matrícula, e um modelo de linguagem de maior capacidade produz uma ficha
+estruturada, validada contra JSON Schema, em que cada campo traz a citação
+literal que o sustenta. No segundo, quando há número de processo válido, a API
+pública DataJud do CNJ fornece os movimentos processuais. No terceiro,
+executado a cada pergunta, um modelo pequeno rodando localmente responde lendo
+apenas a ficha, depois que um filtro determinístico recusa as perguntas fora do
+escopo. Todas as chamadas de modelo passam por um gateway que torna o provedor
+trocável por variável de ambiente e impõe um teto de custo.
 
-A avaliação mediu recusa correta de perguntas fora do escopo (10/10), ausência
-de recusa indevida (0/6), acordo entre extratores determinísticos e modelo
-(6/6) e citação verificável na ficha gerada (33/36 no edital de exemplo; 140/148
-num corpus de cinco editais reais), a um custo de US$ 0,004 por edital e custo
-zero por pergunta. O achado central foi que o prompt de sistema sozinho recusou
-apenas 1 de 10 perguntas proibidas, o que levou a transformar o limite do
-produto em regra de código aplicada antes do modelo.
+A avaliação mediu recusa correta de perguntas fora do escopo (10/10), recusa
+indevida de perguntas respondíveis (0/6), acordo entre extratores
+determinísticos e modelo (6/6) e citação verificável na ficha gerada (33/36 no
+edital de exemplo; 140/148 num corpus de cinco editais reais). O processamento
+de cada edital custou US$ 0,004, e as perguntas não custam nada porque o modelo
+roda localmente. Sem o filtro, o prompt de sistema sozinho fez o modelo recusar
+só 1 de 10 perguntas proibidas. Por causa desse resultado, o limite do produto
+passou a ser uma regra de código, aplicada antes de o modelo ser chamado.
 
 ### Abstract
 
-People who buy real estate at auction sign a notice written for lawyers and
-often learn what they agreed to only after paying. This work presents Arremata
-AI, a conversational assistant on Telegram, orchestrated with n8n, that takes
-the auction notice PDF and makes it readable for a buyer with no legal
-training: it explains what the document says, quotes the passage behind every
-statement and points out what the notice does **not** disclose. The assistant
-does not advise whether to buy, does not estimate market value and does not
-give legal advice.
+People who buy real estate at auction sign a notice full of clauses written for
+lawyers and often learn what they agreed to only after paying. This work
+presents Arremata AI, a Telegram assistant orchestrated with n8n that takes the
+auction notice PDF and explains it to a buyer with no legal training. For every
+statement, the assistant quotes the passage of the notice it came from, and it
+also points out what the document leaves out. It does not advise whether to
+buy, does not estimate market value and does not give legal advice.
 
-The architecture splits processing into three stages. In the first, run once
-per notice, the PDF is converted to Markdown with Docling, deterministic
-extractors read the case number (with its ISO 7064 check digits), amounts,
-dates and property registration, and a stronger language model produces a
-structured record, validated against a JSON Schema, in which every field
-carries the verbatim quote that supports it. In the second, when a valid case
-number exists, the CNJ's public DataJud API supplies the procedural history.
-In the third, run for every question, a small locally hosted model answers from
-the structured record rather than the full document, after a deterministic
-scope filter. Every model call goes through a gateway that makes the provider
+Processing is split into three stages. In the first, run once per notice,
+Docling converts the PDF to Markdown, deterministic extractors read the case
+number (with its ISO 7064 check digits), amounts, dates and property
+registration, and a stronger language model produces a structured record,
+validated against a JSON Schema, in which every field includes the verbatim
+quote that supports it. In the second, when a valid case number exists, the
+CNJ's public DataJud API supplies the procedural history. In the third, run for
+every question, a small locally hosted model answers by reading only the
+structured record, after a deterministic filter has refused out-of-scope
+questions. Every model call goes through a gateway that makes the provider
 swappable through environment variables and enforces a spending cap.
 
-The evaluation measured correct refusal of out-of-scope questions (10/10), no
-wrongful refusals (0/6), agreement between deterministic extractors and the
-model (6/6) and verifiable citations in the generated record (33/36 on the
-sample notice; 140/148 over a corpus of five real notices), at US$ 0.004 per
-notice and zero cost per question. The key finding was that the system prompt
-alone refused only 1 of 10 forbidden questions, which led to turning the
-product's boundary into a code rule applied before the model.
+The evaluation measured correct refusal of out-of-scope questions (10/10),
+wrongful refusal of answerable questions (0/6), agreement between deterministic
+extractors and the model (6/6) and verifiable citations in the generated record
+(33/36 on the sample notice; 140/148 over a corpus of five real notices). Each
+notice cost US$ 0.004 to process, and questions cost nothing because the model
+runs locally. Without the filter, the system prompt alone made the model refuse
+only 1 of 10 forbidden questions. Because of that result, the product's
+boundary became a code rule applied before the model is called.
 
 ### 1. Introdução
 
-Editais de leilão judicial são documentos públicos, publicados no portal do
-leiloeiro por exigência do art. 887, § 2º do Código de Processo Civil. Públicos
-não quer dizer legíveis. O edital de exemplo deste repositório traz, em
+Editais de leilão judicial são públicos: o art. 887, § 2º do Código de Processo
+Civil exige que sejam publicados no portal do leiloeiro. A leitura, porém, é
+difícil para quem não é da área. O edital de exemplo deste repositório traz, em
 cláusulas separadas por páginas:
 
-- a imissão na posse por conta do arrematante — **sem declarar se o imóvel está
-  ocupado**;
+- a imissão na posse por conta do arrematante, sem declarar se o imóvel está
+  ocupado;
 - uma contradição sobre IPTU, que o próprio edital resolve citando o Tema 1134
   do STJ contra o art. 130 do CTN;
-- cinco números de processo, dos quais **apenas um é o processo do leilão** —
-  os outros quatro são jurisprudência citada;
+- cinco números de processo, dos quais só um é o processo do leilão (os outros
+  quatro são jurisprudência citada);
 - duas "matrículas": a do imóvel no cartório e a do leiloeiro na JUCESP.
 
-Nenhuma dessas coisas está escondida. Todas estão espalhadas, em linguagem que
-pressupõe formação jurídica, num documento que a pessoa lê uma vez na vida.
+Nada disso está escondido, mas está espalhado pelo documento em vocabulário
+jurídico, e a pessoa costuma ler um edital desses uma única vez na vida.
 
-**Pessoa.** Comprador pessoa física, no primeiro ou segundo leilão, sem
-formação jurídica. Encontrou um lote num portal de leiloeiro e não tem equipe
-para ler matrícula nem sabe distinguir um ônus que se extingue de um que
-acompanha o imóvel.
+O público-alvo é o comprador pessoa física, no primeiro ou segundo leilão, sem
+formação jurídica. Ele encontrou um lote num portal de leiloeiro, não tem
+equipe para ler matrícula e não sabe distinguir um ônus que se extingue de um
+que acompanha o imóvel.
 
-**Momento.** À noite, com o edital aberto, antes do prazo do leilão — e com uma
-dúvida pontual que não sabe formular por escrito. Ouviu "imissão na posse" e
-não sabe se é "emissão"; quer perguntar sobre a dívida que acompanha o imóvel e
-não sabe que isso se chama *propter rem*. É aí que uma interface conversacional
-ganha do formulário: a pessoa descreve o problema com as palavras que tem, e o
-assistente traduz.
+O momento de uso é à noite, com o edital aberto, antes do prazo do leilão,
+quando surge uma dúvida pontual que a pessoa não sabe formular por escrito. Ela
+ouviu "imissão na posse" e não sabe se é "emissão"; quer perguntar sobre a
+dívida que acompanha o imóvel e não sabe que isso se chama *propter rem*. Nessa
+situação a conversa funciona melhor que um formulário, porque a pessoa descreve
+o problema com as palavras que tem e o assistente traduz.
 
-**Objetivo.** O assistente ajuda um comprador iniciante de imóveis em leilão a
-entender termos, prazos e riscos do edital antes de dar um lance, usando o PDF
-do edital e perguntas em linguagem natural. Dois critérios observáveis definem
-o acerto:
+O objetivo é ajudar esse comprador a entender termos, prazos e riscos do edital
+antes de dar um lance, a partir do PDF e de perguntas em linguagem natural.
+Dois critérios observáveis definem o acerto:
 
-1. **Toda afirmação sobre o edital cita o trecho que a sustenta**, verificável
-   por máquina contra o documento convertido.
-2. **O assistente recusa o que está fora do escopo** — aconselhamento jurídico,
-   "vale a pena comprar?" e previsão de valor.
+1. Toda afirmação sobre o edital cita o trecho que a sustenta, e um script
+   confere a citação contra o documento convertido.
+2. O assistente recusa perguntas fora do escopo: pedidos de orientação
+   jurídica, "vale a pena comprar?" e previsão de valor.
 
-> **Não é advogado e não substitui análise jurídica.** O assistente explica o
-> que o edital diz, mostra de onde tirou cada resposta e diz o que o documento
-> não informa. Não opina se vale a pena arrematar, não estima valor de mercado
-> e não dá orientação jurídica — e isso é verificado por teste, não prometido
-> em texto.
+> **O assistente não é advogado e não substitui análise jurídica.** Ele explica
+> o que o edital diz, mostra de onde tirou cada resposta e informa o que o
+> documento não diz. Não opina se vale a pena arrematar, não estima valor de
+> mercado e não dá orientação jurídica. Esses limites são verificados por
+> testes automatizados.
 
 ### 2. Modelagem
 
 #### 2.1 Três estágios
 
-O desenho ingênuo — mandar o edital inteiro no contexto a cada pergunta — faz o
-custo crescer com `perguntas × tamanho_do_edital` e produz respostas sem
-rastreabilidade. A separação abaixo é o que torna o produto viável:
+A solução mais simples seria mandar o edital inteiro no contexto a cada
+pergunta. O custo cresceria com `perguntas × tamanho_do_edital`, e as respostas
+não teriam como apontar de onde veio cada afirmação. O projeto separa o
+processamento em três estágios:
 
 ```
 ┌─ ESTÁGIO 1 — uma vez por edital ────────────────────────────────┐
@@ -149,58 +150,67 @@ rastreabilidade. A separação abaixo é o que torna o produto viável:
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-O token caro é pago uma vez. A pergunta lê uma ficha curta em vez de um
-documento jurídico denso — que é onde um modelo pequeno deixa de ser risco e o
-custo por pergunta vai a zero. A ficha também é rastreável (cada campo carrega
-o trecho que o sustenta) e serve como entregável fora do chat.
+A leitura cara do documento acontece uma vez por edital. Depois disso, cada
+pergunta lê só a ficha, de cerca de 3 mil tokens. Um texto curto e estruturado
+está ao alcance de um modelo pequeno, que teria dificuldade com o edital
+inteiro, e como esse modelo roda na máquina, a pergunta não custa nada em API.
+A ficha também guarda, em cada campo, o trecho do edital que o sustenta, e pode
+ser usada fora do chat.
 
 #### 2.2 Determinístico antes do modelo
 
-Extratores de expressão regular rodam **antes** do modelo e têm dois papéis:
-entram no prompt como âncora e **conferem** a saída dele. A divergência entre
-os dois vira `confidence: low` na ficha, nunca um desempate silencioso.
+Extratores de expressão regular rodam antes do modelo. O resultado deles entra
+no prompt como âncora e depois serve para conferir a saída do modelo. Quando os
+dois divergem, o campo recebe `confidence: low` na ficha, e o sistema não
+escolhe um dos valores sem avisar.
 
-O número de processo é o caso mais forte. O dígito verificador módulo 97
-(ISO 7064, Resolução CNJ 65/2008) separa "sequência de 20 dígitos" de "processo
-real", e a classificação por instância separa o processo do leilão dos
-precedentes citados no texto — sem ela, a ficha traria do DataJud a situação
-processual de outra pessoa.
+O número de processo é o melhor exemplo. O dígito verificador módulo 97 (ISO
+7064, Resolução CNJ 65/2008) distingue um número de processo válido de uma
+sequência qualquer de 20 dígitos. A classificação por instância separa o
+processo do leilão dos precedentes citados no texto; sem ela, a ficha traria do
+DataJud a situação processual de outra pessoa.
 
 #### 2.3 A ficha
 
 A saída do Estágio 1 é validada contra `schemas/ficha.schema.json`. Cada campo
-carrega o valor extraído, o `quote` (trecho literal do edital, até 600
-caracteres), a origem e o grau de confiança. O campo `gaps` — o que o edital não informa — é obrigatório: a
-omissão costuma ser o achado mais valioso, e um extrator que só lê campos
-preenchidos perderia exatamente o risco mais caro, como a ocupação não
-declarada.
+tem o valor extraído, o `quote` (trecho literal do edital, com até 600
+caracteres), a origem e o grau de confiança.
 
-Ficha reprovada no schema não é descartada: os erros de validação voltam ao
-modelo com o documento e um pedido de correção pontual, uma única vez.
+O campo `gaps`, que lista o que o edital não informa, é obrigatório. No edital
+de exemplo, a omissão mais cara é a ocupação: o documento não diz se o imóvel
+está ocupado e atribui ao arrematante a imissão na posse. Um extrator que lesse
+só os campos preenchidos não registraria esse risco.
+
+Quando a ficha é reprovada no schema, os erros de validação voltam ao modelo
+junto com o documento e um pedido de correção pontual. Há uma única tentativa
+de correção.
 
 #### 2.4 Conversa e escopo
 
 A pergunta passa primeiro por `services/extractors/scope.py`, um filtro
 determinístico que recusa pedidos de aconselhamento, previsão de valor e
 opinião sobre a compra. O prompt `prompts/qa-system.md` repete o limite como
-segunda camada. O filtro é conservador de propósito: recusar uma pergunta
-respondível é pior que deixar passar uma duvidosa, porque a segunda ainda
-encontra o prompt pela frente e a primeira não tem resgate.
+segunda camada. O filtro só recusa formulações inequívocas, porque recusar uma
+pergunta respondível é pior que deixar passar uma duvidosa: a duvidosa ainda
+esbarra no prompt, e a respondível recusada fica sem resposta.
 
-A ficha é apresentada em três blocos: **a favor** (deságio da segunda praça,
-ausência de ônus, processo sem sinal de cancelamento), **pontos de atenção** e
-**o que o edital não informa**. O bloco "a favor" relata fatos, não recomenda:
-existe porque três linhas de alerta sem contrapartida levam a pessoa a concluir
-que o lote é ruim mesmo quando o documento não diz isso. Cada fato exige base —
-ausência de ônus só é afirmada quando o edital se pronunciou, e "processo sem
-sinal de cancelamento" só depois da consulta ao DataJud. Sem apuração, silêncio.
+A ficha é apresentada em três blocos: "a favor" (deságio da segunda praça,
+ausência de ônus, processo sem sinal de cancelamento), "pontos de atenção" e "o
+que o edital não informa". O bloco "a favor" lista fatos favoráveis do edital,
+sem recomendar a compra. Ele existe porque uma ficha só com alertas leva a
+pessoa a concluir que o lote é ruim mesmo quando o documento não diz isso.
+
+Cada fato desse bloco precisa de base. A ausência de ônus só aparece quando o
+edital trata do assunto, e "processo sem sinal de cancelamento" só aparece
+depois da consulta ao DataJud. Sem essa base, o bloco não diz nada sobre o
+ponto.
 
 #### 2.5 Camada de modelo trocável
 
-Toda chamada passa pelo sub-fluxo `00-llm-gateway`. Dois adaptadores cobrem o
-mercado: `anthropic` (Messages API) e `openai` (chat/completions, que serve
-Ollama, DeepSeek, OpenRouter, Groq e vLLM). O gateway normaliza o que de fato
-difere entre provedores:
+Toda chamada de modelo passa pelo sub-fluxo `00-llm-gateway`, que tem dois
+adaptadores: `anthropic` (Messages API) e `openai` (chat/completions, protocolo
+que Ollama, DeepSeek, OpenRouter, Groq e vLLM também aceitam). O gateway
+normaliza as diferenças entre provedores:
 
 | Conceito | `anthropic` | `openai` |
 |---|---|---|
@@ -208,32 +218,37 @@ difere entre provedores:
 | Saída estruturada | `output_config.format` | `response_format.json_schema` |
 | Uso de tokens | `input_tokens` / `output_tokens` | `prompt_tokens` / `completion_tokens` |
 
-É a normalização do `usage` que permite gravar o custo de cada chamada e
-**recusar a chamada** quando o acumulado passa de `BUDGET_USD_LIMIT` — antes de
-gastar, não depois.
+Com o `usage` normalizado, o gateway grava o custo de cada chamada e recusa a
+próxima quando o acumulado passa de `BUDGET_USD_LIMIT`. A recusa acontece antes
+de a chamada ser feita.
 
-Normaliza também uma quarta coisa, que só apareceu em produção: **o raciocínio
-do modelo não chega à pessoa**. A Messages API o entrega em bloco próprio e o
-Ollama em campo separado, mas essa separação depende de o modelo abrir o bloco
-com `<think>` — e abertura de bloco é geração, não protocolo. Com o qwen3 uma
-resposta veio com um token de lixo no lugar da abertura, e o raciocínio inteiro,
-em inglês, foi entregue como se fosse a resposta. O gateway corta pelo
-fechamento, que é o que sobrevive.
+O gateway também impede que o raciocínio do modelo chegue à pessoa, um problema
+que só apareceu em produção. A Messages API entrega o raciocínio num bloco
+próprio e o Ollama num campo separado, mas essa separação depende de o modelo
+gerar a marca `<think>` de abertura, e essa marca é texto gerado como qualquer
+outro. Numa resposta do qwen3, um token espúrio saiu no lugar da abertura, e o
+raciocínio inteiro, em inglês, foi entregue como se fosse a resposta. Desde
+então o gateway corta o texto pela marca de fechamento, que apareceu mesmo
+nesse caso.
 
-Configuração usada na avaliação: extração com `deepseek-v4-flash`
-(`reasoning_effort=minimal`) e perguntas com `qwen3:14b` via Ollama, numa RTX
-4070 Ti Super de 16 GB.
+Na avaliação, a extração usou `deepseek-v4-flash` com
+`reasoning_effort=minimal`, e as perguntas usaram `qwen3:14b` via Ollama numa
+RTX 4070 Ti Super de 16 GB.
 
 #### 2.6 Privacidade
 
-O CPF do executado consta do edital público e **nunca** é persistido nem
-enviado a um provedor: o Markdown é mascarado na conversão, que é o ponto por
-onde o documento entra no sistema. A ficha não tem campo para nome ou CPF de
-executado, e o `additionalProperties: false` do schema rejeitaria se o modelo
-tentasse preencher. O Estágio 1 é o único que envia o documento a terceiro; as
-perguntas seguintes trafegam só a ficha, e o `chat_id` nunca vai a provedor de
-modelo. Não há scraping de portal de tribunal (e-SAJ, PJe): o DataJud é a rota
-pública legítima, e onde ele não cobre, a resposta é dizer que não cobre.
+O CPF do executado consta do edital público, mas o sistema não o grava nem o
+envia a provedor: o Markdown é mascarado na conversão, que é por onde o
+documento entra. No edital de exemplo, o PDF tem dois CPFs e a ficha, nenhum. A
+ficha também não tem campo para nome ou CPF de executado, e o
+`additionalProperties: false` do schema rejeitaria a ficha se o modelo
+tentasse incluí-los.
+
+O Estágio 1 é o único que envia o documento a terceiro. As perguntas seguintes
+trafegam só a ficha, e o `chat_id` nunca vai a provedor de modelo. O projeto
+não raspa portais de tribunal (e-SAJ, PJe) e usa o DataJud, a API pública do
+CNJ. Quando o processo está fora da cobertura do DataJud, o assistente informa
+isso.
 
 #### 2.7 Implementação
 
@@ -254,26 +269,26 @@ pública legítima, e onde ele não cobre, a resposta é dizer que não cobre.
 | `workflows/04-edital-preparar.json` | PDF → texto + lotes, antes da confirmação |
 
 Todos os fluxos são gerados por `scripts/build-workflows.py`, que roda
-`node --check` em cada nó de código antes de escrever o JSON. O fluxo é código
-versionado, não clique num editor.
+`node --check` em cada nó de código antes de escrever o JSON. Assim os fluxos
+ficam versionados no git junto com o resto do código.
 
 Documentação complementar:
 
-- [`docs/architecture.md`](docs/architecture.md) — decisões e o porquê de cada uma
-- [`docs/domain.md`](docs/domain.md) — pessoa, momento, evidência, acerto
-- [`docs/evaluation.md`](docs/evaluation.md) — o que cada número mede e onde ele para
-- [`docs/privacy.md`](docs/privacy.md) — dado pessoal, LGPD, limites de coleta
-- [`docs/operations.md`](docs/operations.md) — endereços, logs, custo por conversa, troca de modelo
-- [`docs/evidence/`](docs/evidence/) — medições datadas, incluindo os erros
+- [`docs/architecture.md`](docs/architecture.md): decisões de desenho e o motivo de cada uma
+- [`docs/domain.md`](docs/domain.md): pessoa, momento, evidência e critério de acerto
+- [`docs/evaluation.md`](docs/evaluation.md): o que cada número mede e até onde vale
+- [`docs/privacy.md`](docs/privacy.md): dado pessoal, LGPD e limites de coleta
+- [`docs/operations.md`](docs/operations.md): endereços, logs, custo por conversa e troca de modelo
+- [`docs/evidence/`](docs/evidence/): medições datadas, incluindo os erros
 
 ### 3. Resultados
 
 #### 3.1 O assistente em uso
 
 A pessoa envia o PDF do edital ao bot. Em segundos ele mostra o imóvel que
-encontrou — ou a lista, quando o edital cobre vários — e pergunta qual analisar.
-Confirmada a escolha, a ficha fica pronta em cerca de dois minutos. Depois é
-conversa:
+encontrou (ou a lista, quando o edital cobre vários) e pergunta qual analisar.
+Depois da confirmação, a ficha fica pronta em cerca de dois minutos, e a pessoa
+pode fazer perguntas:
 
 > **você:** esse imóvel está ocupado?
 > **bot:** O edital não informa a ocupação. Ele atribui a imissão na posse ao
@@ -293,22 +308,22 @@ Medidas sobre o edital de exemplo e a ficha gerada pelo pipeline
 
 | Medida | Resultado |
 |---|---|
-| Recusa correta (filtro determinístico) | **10/10** |
-| Recusa indevida de pergunta respondível | **0/6** |
-| Extração e validação de número CNJ | **3/3** |
-| Acordo determinístico × modelo | **6/6** |
-| Citação verificável na ficha gerada | **33/36 (92%)** |
-| Custo por edital | **US$ 0,004** |
-| Custo por pergunta | **US$ 0** (modelo local) |
+| Recusa correta (filtro determinístico) | 10/10 |
+| Recusa indevida de pergunta respondível | 0/6 |
+| Extração e validação de número CNJ | 3/3 |
+| Acordo determinístico × modelo | 6/6 |
+| Citação verificável na ficha gerada | 33/36 (92%) |
+| Custo por edital | US$ 0,004 |
+| Custo por pergunta | US$ 0 (modelo local) |
 
-A recusa correta e a recusa indevida só significam algo juntas: um filtro que
-recusa tudo tira nota máxima na primeira e destrói o produto.
+As duas medidas de recusa precisam ser lidas juntas, porque um filtro que
+recusasse tudo tiraria 10/10 na primeira e deixaria o produto inútil.
 
 #### 3.3 Corpus de editais reais
 
-A mesma medida de citação e de acordo, aplicada a todos os editais que o
-pipeline já processou, lendo o Markdown e a ficha que ficaram no banco — o que
-a pessoa de fato recebeu
+As medidas de citação e de acordo foram repetidas em todos os editais que o
+pipeline já processou, a partir do Markdown e da ficha gravados no banco, que
+são o que a pessoa recebeu
 ([`docs/evidence/2026-08-07-avaliacao-corpus.md`](docs/evidence/2026-08-07-avaliacao-corpus.md)):
 
 | Rito | Tamanho | Citação verificável | Determinístico × modelo |
@@ -318,29 +333,30 @@ a pessoa de fato recebeu
 | judicial | 17k | 30/32 (94%) | 5/6 (83%) |
 | judicial | 13k | 31/35 (89%) | 5/5 (100%) |
 | extrajudicial | 52k | 21/21 (100%) | 2/3 (67%) |
-| **agregado** | | **140/148 (95%)** | **23/25 (92%)** |
+| agregado | | 140/148 (95%) | 23/25 (92%) |
 
-As duas divergências são datas de primeira praça em que regex e modelo leram
-coisas diferentes. Em cada uma, uma das duas leituras está errada — é
-exatamente o sinal que a conferência cruzada existe para levantar.
+As duas divergências são datas de primeira praça em que a regex e o modelo
+leram valores diferentes. Em cada caso, uma das leituras está errada, e é para
+encontrar esse tipo de erro que a conferência cruzada existe.
 
-#### 3.4 O número que mudou o desenho
+#### 3.4 Recusa sem o filtro de escopo
 
-Com as mesmas dez perguntas fora de escopo enviadas direto ao modelo, **sem o
-filtro na frente**, o prompt sozinho segurou **1 de 10**. O `qa-system.md` diz
-com todas as letras que o assistente não opina sobre compra; perguntado "vale a
-pena comprar esse imóvel?", o modelo respondeu com análise de investimento e
-inventou um bairro que não está na ficha.
+As mesmas dez perguntas fora do escopo foram enviadas direto ao modelo, sem o
+filtro, e o prompt sozinho fez o modelo recusar só 1 delas. O `qa-system.md`
+diz explicitamente que o assistente não opina sobre a compra. Mesmo assim,
+perguntado "vale a pena comprar esse imóvel?", o modelo respondeu com uma
+análise de investimento e inventou um bairro que não está na ficha.
 
-Instrução em prompt é um pedido, e num modelo pequeno é um pedido que ele às
-vezes atende. Foi essa medida que transformou o limite do produto em regra de
-código, aplicada antes de qualquer chamada de modelo.
+Depois dessa medida, o limite do produto passou para
+`services/extractors/scope.py`, que roda antes de qualquer chamada de modelo, e
+o prompt ficou como segunda camada.
 
 #### 3.5 O efeito das âncoras determinísticas
 
-Entregar valores, datas e matrícula ao modelo como conferência subiu a taxa de
-citação verificável de **71% para 92%**: ele passa a copiar onde há número a
-ancorar. As três citações que restam são texto corrido, sem âncora possível.
+Com valores, datas e matrícula entregues ao modelo como referência, a taxa de
+citação verificável subiu de 71% para 92%. O modelo passou a copiar o texto do
+edital nos trechos que contêm esses números. As três citações que ainda falham
+são de texto corrido, sem número que sirva de âncora.
 
 #### 3.6 Tempo e custo
 
@@ -349,49 +365,48 @@ ancorar. As três citações que restam são texto corrido, sem âncora possíve
 | Conversão do PDF (Docling) | 3,9 s |
 | Extração da ficha, raciocínio padrão | ~147 s |
 | Extração da ficha, `reasoning_effort=minimal` | ~110 s |
-| Pergunta no Q&A (`qwen3:14b` local) | 13–33 s |
+| Pergunta no Q&A (`qwen3:14b` local) | 13 a 33 s |
 
-A chamada ao modelo de extração responde por 97% do tempo; nós de código,
-banco e conversão somam menos de 100 ms além do Docling. Desligar o raciocínio
-deixa a extração cinco vezes mais rápida, mas produziu ficha válida em apenas
-1 de 3 execuções — por isso a configuração adotada é `minimal`
+A chamada ao modelo de extração ocupa 97% do tempo total. Fora ela e a
+conversão do Docling, os nós de código e as consultas ao banco somam menos de
+100 ms. Com o raciocínio desligado, a extração ficou cinco vezes mais rápida,
+mas só 1 de 3 execuções produziu ficha válida. Por isso a configuração adotada
+é `minimal`
 ([`docs/evidence/2026-08-06-tempo-de-extracao.md`](docs/evidence/2026-08-06-tempo-de-extracao.md)).
 
 ### 4. Conclusões
 
-Separar a leitura do documento (uma vez, com modelo forte) da conversa (muitas
-vezes, com modelo pequeno sobre uma ficha curta) tornou o assistente barato,
-rastreável e compatível com um modelo local. A citação obrigatória por campo
-transformou a promessa central do projeto — "toda afirmação mostra de onde
-veio" — em algo que a máquina confere.
+Ler o documento uma vez, com um modelo forte, e responder às perguntas com um
+modelo pequeno sobre uma ficha curta deixou o custo por pergunta em zero e
+permitiu rodar o Q&A localmente. A citação obrigatória por campo tornou
+verificável por máquina a principal promessa do projeto, a de que toda
+afirmação mostra de onde veio.
 
-O resultado mais importante veio de uma medida que foi construída para
-confirmar o desenho e acabou por refutá-lo: o prompt sozinho segurou 1 de 10
-perguntas proibidas. Limites que o produto promete não podem depender da
-disposição do modelo em obedecer; precisam de uma regra que rode antes dele. O
-mesmo raciocínio vale para os extratores determinísticos, que ancoram e
-conferem a saída do modelo, e para o gateway, que recusa a chamada antes de o
-teto de custo ser ultrapassado.
+O passe ao vivo da avaliação foi montado para confirmar que o prompt bastava
+para recusar perguntas proibidas, e mostrou que não: o modelo recusou 1 de 10.
+A conclusão prática é que um limite prometido ao usuário precisa de uma regra
+que rode antes do modelo. O projeto aplica a mesma ideia em dois outros pontos:
+os extratores determinísticos conferem a saída do modelo, e o gateway recusa a
+chamada quando o teto de custo é atingido.
 
 Limites conhecidos:
 
-- **Amostra pequena.** O corpus tem cinco editais, quatro deles judiciais.
-  Editais de outros tribunais, extrajudiciais ou digitalizados podem se
-  comportar de outro jeito.
-- **PDF digitalizado** sem camada de texto exige `ocr=true`, e a qualidade cai.
-- **O filtro de escopo é regex.** Pega formulações inequívocas; uma pergunta
-  rebuscada o suficiente passa e encontra só o prompt.
-- **DataJud não traz peças nem decisões**, só movimentos. O assistente sinaliza
-  risco procedimental; não conclui nada sobre o mérito.
-- **Um edital por conversa** — a ficha carregada é sempre a mais recente.
-- **Três citações em 36 ainda são paráfrase** na ficha do edital de exemplo.
-  Estão listadas no relatório de avaliação, não escondidas.
+- O corpus tem cinco editais, quatro deles judiciais. Editais de outros
+  tribunais, extrajudiciais ou digitalizados podem se comportar de outro jeito.
+- PDF digitalizado sem camada de texto exige `ocr=true`, e a qualidade cai.
+- O filtro de escopo é regex e pega formulações inequívocas. Uma pergunta
+  rebuscada o suficiente passa por ele e encontra só o prompt.
+- O DataJud traz só movimentos processuais, sem peças nem decisões. O
+  assistente sinaliza risco procedimental e não conclui nada sobre o mérito.
+- Cada conversa trabalha com um edital por vez, e a ficha carregada é sempre a
+  mais recente.
+- Na ficha do edital de exemplo, três das 36 citações ainda são paráfrase. Elas
+  estão listadas no relatório de avaliação.
 
-Como trabalhos futuros: ampliar o corpus para outros tribunais e para leilões
-extrajudiciais, definir prazo automático de retenção dos dados (hoje só há
-remoção a pedido, por `/apagar`), permitir mais de um edital por conversa e
-avaliar a qualidade das respostas com gabarito, e não só por cobertura de
-termos.
+Os próximos passos são ampliar o corpus para outros tribunais e para leilões
+extrajudiciais, definir prazo automático de retenção dos dados (hoje a remoção
+só acontece a pedido, pelo `/apagar`), permitir mais de um edital por conversa
+e avaliar as respostas contra um gabarito, além da cobertura de termos.
 
 ### 5. Referências
 
@@ -415,7 +430,7 @@ termos.
 
 Pré-requisitos: Docker com Compose, Python 3, Node.js, um bot criado no
 [@BotFather](https://t.me/BotFather) e, para o Q&A local, o
-[Ollama](https://ollama.com) instalado no host (com GPU, de preferência).
+[Ollama](https://ollama.com) instalado no host (de preferência com GPU).
 
 ```bash
 git clone https://github.com/goulartt/puc-rj-projeto-final.git
@@ -425,10 +440,10 @@ docker compose up -d
 ```
 
 A chave do DataJud é pública e publicada pelo CNJ, mas pode mudar a qualquer
-momento; a atual fica em <https://datajud-wiki.cnj.jus.br/api-publica/acesso/>.
+momento. A atual fica em <https://datajud-wiki.cnj.jus.br/api-publica/acesso/>.
 
-Modelo local do Q&A — o Ollama precisa escutar além do loopback para que os
-contêineres o alcancem:
+Para o modelo local do Q&A, o Ollama precisa escutar além do loopback, senão os
+contêineres não o alcançam:
 
 ```bash
 ollama pull qwen3:14b
@@ -438,14 +453,16 @@ printf '[Service]\nEnvironment="OLLAMA_HOST=0.0.0.0"\n' \
 sudo systemctl daemon-reload && sudo systemctl restart ollama
 ```
 
-Quem não puder mexer no systemd usa o perfil `ollama-bridge` do compose, e
-quem tiver `nvidia-container-toolkit` pode usar o Ollama em contêiner, no
-perfil `local-llm`.
+Quem não puder mexer no systemd usa o perfil `ollama-bridge` do compose, e quem
+tiver `nvidia-container-toolkit` pode usar o Ollama em contêiner, no perfil
+`local-llm`.
 
-No n8n, abra `http://localhost:5678` **pelo localhost** e crie a conta de dono
-antes de publicar o túnel: ele expõe o editor inteiro, não só o webhook. Crie
-as credenciais "Bot do Telegram" (token do bot) e "Postgres do projeto" (host
-`postgres`, porta 5432, base e usuário do `.env`) e importe os fluxos:
+No n8n, abra `http://localhost:5678` pelo localhost e **crie a conta de dono
+antes de publicar o túnel**. O túnel expõe o editor inteiro junto com o
+webhook, e sem a conta qualquer pessoa com a URL acessa os fluxos e as
+credenciais salvas. Crie as credenciais "Bot do Telegram" (token do bot) e
+"Postgres do projeto" (host `postgres`, porta 5432, base e usuário do `.env`) e
+importe os fluxos:
 
 ```bash
 python3 scripts/build-workflows.py
@@ -462,7 +479,7 @@ docker compose restart n8n
 
 Se algum nó não encontrar a credencial sozinho, selecione-a no editor. Os
 sub-fluxos precisam ser publicados para serem chamáveis, e `import` zera a flag
-de ativação — detalhes em [`docs/operations.md`](docs/operations.md).
+de ativação. Os detalhes estão em [`docs/operations.md`](docs/operations.md).
 
 ### 7. Como executar
 
@@ -470,16 +487,17 @@ de ativação — detalhes em [`docs/operations.md`](docs/operations.md).
 ./scripts/expose-bot.sh   # sobe o túnel, atualiza o .env e registra o webhook
 ```
 
-O túnel rápido do Cloudflare sorteia um domínio a cada reinício; rodar o script
-de novo refaz o registro do webhook.
+O túnel rápido do Cloudflare sorteia um domínio a cada reinício, e rodar o
+script de novo refaz o registro do webhook.
 
 No Telegram, envie o PDF do edital ao bot (há um de exemplo em
-`data/editais/edital-exemplo.pdf`), escolha o imóvel e pergunte. `/ajuda`
-explica o que o bot faz e o que faz com os dados; `/apagar` remove os editais
-e fichas da conversa.
+`data/editais/edital-exemplo.pdf`), escolha o imóvel e faça perguntas. O
+comando `/ajuda` explica o que o bot faz e o que ele faz com os dados, e o
+`/apagar` remove os editais e fichas da conversa.
 
-Trocar de provedor é trocar variável de ambiente e recriar o contêiner
-(`docker compose up -d n8n` — `restart` mantém o ambiente antigo):
+Para trocar de provedor, basta mudar as variáveis de ambiente e recriar o
+contêiner com `docker compose up -d n8n`. O `restart` mantém o ambiente antigo
+e não serve para isso:
 
 ```bash
 LLM_EXTRACTION_PROVIDER=openai      # deepseek
@@ -501,9 +519,9 @@ python3 scripts/eval-corpus.py --out docs/evidence/     # todos os editais do ba
 ```
 
 Os fluxos têm smoke tests próprios em `tests/workflows/`, executáveis com
-`n8n execute --id=<id>`. O do chat deriva do fluxo real em vez de
-reimplementá-lo: troca o gatilho do Telegram por mensagens sintéticas e mantém
-roteamento, escopo e gateway idênticos aos de produção.
+`n8n execute --id=<id>`. O smoke test do chat é gerado a partir do fluxo real:
+troca o gatilho do Telegram por mensagens sintéticas e mantém roteamento,
+escopo e gateway iguais aos de produção.
 
 ---
 
