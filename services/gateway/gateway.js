@@ -20,8 +20,10 @@
 'use strict';
 
 // Os dois valores nomeiam **protocolos HTTP**, não empresas: `anthropic` é o
-// formato da Messages API, `openai` é o formato `chat/completions`, que
-// DeepSeek, Ollama, OpenRouter, Together, Groq e vLLM também falam.
+// formato da Messages API, `openai` é o formato `chat/completions`, que a
+// OpenRouter fala — e, por trás dela, DeepSeek, Qwen, Kimi e o resto do
+// catálogo. O provedor padrão do projeto é a OpenRouter; a Messages API segue
+// disponível para quem quiser falar com a Anthropic direto.
 const ANTHROPIC = 'anthropic';
 const OPENAI = 'openai';
 
@@ -45,55 +47,47 @@ const STRUCTURED_MODES = [STRUCTURED_SCHEMA, STRUCTURED_JSON, STRUCTURED_NONE];
 // medido em docs/evidence/, não presumido.
 const REASONING_NONE = 'none';
 
-// Chamar de "openai" um endpoint da DeepSeek confunde quem lê o `.env`, então
+// Chamar de "openai" o endpoint da OpenRouter confunde quem lê o `.env`, então
 // aceitamos apelidos que dizem a mesma coisa com nomes menos enganosos.
 const PROVIDER_ALIASES = {
   anthropic: ANTHROPIC,
   claude: ANTHROPIC,
   openai: OPENAI,
   'openai-compatible': OPENAI,
-  deepseek: OPENAI,
-  ollama: OPENAI,
   openrouter: OPENAI,
-  groq: OPENAI,
-  together: OPENAI,
-  vllm: OPENAI,
 };
 
 /**
- * Preço por milhão de tokens, em USD. Conferido em 06/08/2026.
+ * Preço por milhão de tokens, em USD, para provedores que **não** informam o
+ * custo na resposta. Conferido em 06/08/2026.
  *
- * `cachedInput` é o preço de token lido do cache, e é **por modelo**: a
- * Anthropic cobra ~10% da entrada, a DeepSeek cobra 2%. Uma constante única
- * faria a contabilidade errar em um dos dois, e o teto de orçamento depende
- * desse número estar certo.
+ * Com a OpenRouter esta tabela não é consultada: ela devolve em `usage.cost` o
+ * valor efetivamente cobrado, e esse número vale mais que qualquer tabela — o
+ * preço de um mesmo modelo muda conforme o provedor que ela escolhe por trás.
+ * `deepseek/deepseek-v4-flash` apareceu no catálogo com saída a US$ 0,131/MTok,
+ * e as variantes datadas do mesmo modelo, entre US$ 0,55 e 0,64.
  *
- * Só entram modelos cujo preço foi verificado. Modelo ausente da tabela não
- * vira custo zero: `canProceed` o barra, para o teto não ser furado em
- * silêncio por um modelo que ninguém precificou.
+ * A tabela sobra para a Messages API da Anthropic, chamada direto. Modelo sem
+ * preço aqui e num provedor que não informa custo é barrado por `canProceed`,
+ * para o teto de orçamento não ser furado em silêncio.
  */
 const PRICING = {
   'claude-opus-5': { input: 5, output: 25, cachedInput: 0.5 },
   'claude-opus-4-8': { input: 5, output: 25, cachedInput: 0.5 },
   'claude-sonnet-5': { input: 3, output: 15, cachedInput: 0.3 },
   'claude-haiku-4-5': { input: 1, output: 5, cachedInput: 0.1 },
-
-  // DeepSeek — a documentação avisa que os preços vão subir "significativamente
-  // em breve". Reconferir antes de confiar no custo projetado.
-  'deepseek-v4-flash': { input: 0.14, output: 0.28, cachedInput: 0.0028 },
-  'deepseek-v4-pro': { input: 0.435, output: 0.87, cachedInput: 0.003625 },
 };
 
-/** Endereços que caracterizam modelo local — custo real zero. */
-const LOCAL_HOSTS = ['localhost', '127.0.0.1', '::1', 'host.docker.internal', 'ollama'];
+/** Hosts que devolvem o custo cobrado em `usage.cost`. */
+const REPORTS_COST = ['openrouter.ai'];
 
 /**
  * Extrai o host de uma URL sem depender do global `URL`.
  *
  * O sandbox do nó de código do n8n não expõe `URL`. Uma versão anterior usava
- * `new URL()` dentro de try/catch: o ReferenceError era engolido, todo endereço
- * virava "remoto", e o Ollama local passou a ser barrado como modelo pago sem
- * preço. Regex não tem essa dependência.
+ * `new URL()` dentro de try/catch: o ReferenceError era engolido em silêncio e
+ * a classificação de endereço errava sem avisar. Regex não tem essa
+ * dependência.
  */
 function hostOf(baseUrl) {
   const match = /^[a-z][a-z0-9+.-]*:\/\/(?:[^@/]*@)?(\[[^\]]+\]|[^:/?#]+)/i.exec(
@@ -103,8 +97,9 @@ function hostOf(baseUrl) {
   return match[1].replace(/^\[|\]$/g, '').toLowerCase();
 }
 
-function isLocal(baseUrl) {
-  return LOCAL_HOSTS.includes(hostOf(baseUrl));
+/** O provedor informa quanto cobrou? Então não precisamos de tabela de preço. */
+function reportsCost(config) {
+  return REPORTS_COST.includes(hostOf(config.baseUrl));
 }
 
 /**
@@ -141,10 +136,9 @@ function resolveConfig(role, env) {
  *
  * `schema` pede **decodificação restrita** ao provedor. É otimização, não
  * garantia: quem garante o formato é a validação que roda depois, no serviço
- * de documentos. Nem todo provedor dá conta — o Ollama compila o schema numa
- * gramática GBNF e falha com "failed to parse grammar" em schemas do tamanho
- * do nosso, para qualquer geração acima de ~200 tokens. Por isso o campo é
- * opcional e o pipeline continua correto sem ele.
+ * de documentos. Nem todo provedor dá conta — a API direta da DeepSeek
+ * recusava `json_schema`, e um modelo local não compilava um schema do nosso
+ * tamanho. Por isso o campo é opcional e o pipeline continua correto sem ele.
  *
  * `cacheSystem` marca o bloco de sistema para cache — é o que torna barato
  * repetir o mesmo prompt de analista entre editais.
@@ -192,7 +186,7 @@ function buildRequest(config, {
     };
   }
 
-  // OPENAI: cobre Ollama, OpenRouter, Together, Groq, vLLM.
+  // OPENAI: o formato `chat/completions`, que é o da OpenRouter.
   const body = {
     model: config.model,
     max_tokens: maxTokens,
@@ -206,29 +200,32 @@ function buildRequest(config, {
       json_schema: { name: 'output', strict: true, schema },
     };
   } else if (structuredMode === STRUCTURED_JSON) {
-    // Só garante JSON sintático, não a estrutura. É o máximo que a DeepSeek
-    // oferece hoje: `json_schema` responde
-    // "This response_format type is unavailable now".
+    // Só garante JSON sintático, não a estrutura. Serve de degrau quando o
+    // modelo por trás não aceita `json_schema`.
     body.response_format = { type: 'json_object' };
   }
-  // Verificado contra a API da DeepSeek: `none` zera de fato o raciocínio
-  // (27,5s → 3,1s no mesmo prompt), e `minimal` é ignorado em silêncio — que é
-  // o comportamento padrão de uma API compatível com OpenAI diante de um valor
-  // que ela não conhece. Por isso o campo passa adiante o que foi pedido, sem
-  // traduzir: inventar um mapeamento esconderia esse silêncio.
+  // `reasoning_effort` consta dos parâmetros aceitos pelos modelos DeepSeek no
+  // catálogo da OpenRouter, que o repassa ao provedor. Medido contra a
+  // DeepSeek: `none` zera o raciocínio (27,5s → 3,1s num prompt de controle) e
+  // `minimal` o reduz a um quinto.
   if (reasoning) body.reasoning_effort = reasoning;
 
-  // `cacheSystem` não tem equivalente aqui e é ignorado de propósito: o
-  // caminho OpenAI-compat não expõe controle de cache.
+  // `cacheSystem` não tem equivalente aqui e é ignorado de propósito: o cache
+  // de prefixo da DeepSeek é automático, e já lia 12.288 de 12.291 tokens de
+  // entrada na extração.
 
-  return {
-    url: `${config.baseUrl}/v1/chat/completions`,
-    headers: {
-      'content-type': 'application/json',
-      authorization: `Bearer ${config.apiKey}`,
-    },
-    body,
+  const headers = {
+    'content-type': 'application/json',
+    authorization: `Bearer ${config.apiKey}`,
   };
+  // Identificação opcional da aplicação no painel da OpenRouter: separa o gasto
+  // deste projeto do de outros que usem a mesma conta.
+  if (hostOf(config.baseUrl) === 'openrouter.ai') {
+    headers['http-referer'] = 'https://github.com/goulartt/puc-rj-projeto-final';
+    headers['x-title'] = 'Arremata AI';
+  }
+
+  return { url: `${config.baseUrl}/v1/chat/completions`, headers, body };
 }
 
 /** Junta os blocos de texto de uma resposta da Messages API. */
@@ -243,13 +240,13 @@ function anthropicText(content) {
 /**
  * Remove o raciocínio que veio no corpo da resposta.
  *
- * O normal é o provedor separar: o Ollama devolve `message.reasoning` e deixa
- * `content` limpo, e a Messages API manda o raciocínio em bloco próprio. Mas a
- * separação depende de o modelo abrir o bloco com `<think>`, e isso é geração,
- * não protocolo — observado em produção com o qwen3, uma resposta veio com um
- * token de lixo (`栋`) no lugar da abertura. Sem a abertura o Ollama não
- * reconheceu o bloco, e o raciocínio inteiro — em inglês, discutindo o que
- * responder — foi entregue à pessoa como se fosse a resposta.
+ * O normal é o provedor separar: a OpenRouter devolve `message.reasoning` e
+ * deixa `content` limpo, e a Messages API manda o raciocínio em bloco próprio.
+ * Mas a separação depende de o modelo abrir o bloco com `<think>`, e isso é
+ * geração, não protocolo — observado em produção, uma resposta veio com um
+ * token de lixo (`栋`) no lugar da abertura, o provedor não reconheceu o bloco,
+ * e o raciocínio inteiro — em inglês, discutindo o que responder — foi entregue
+ * à pessoa como se fosse a resposta.
  *
  * O fechamento sobreviveu, e é nele que dá para confiar: o que estiver antes
  * de um `</think>` é raciocínio, tenha a abertura casado ou não.
@@ -301,14 +298,19 @@ function normalizeResponse(provider, raw) {
 
   const choice = (raw.choices && raw.choices[0]) || {};
   const usage = raw.usage || {};
+  const normalizedUsage = {
+    input: usage.prompt_tokens || 0,
+    output: usage.completion_tokens || 0,
+    cached: (usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens) || 0,
+  };
+  // O que a OpenRouter efetivamente cobrou. Só entra quando é número: ausência
+  // não pode virar custo zero, senão o teto de orçamento para de contar.
+  if (typeof usage.cost === 'number') normalizedUsage.costUsd = usage.cost;
+
   return {
     text: stripReasoning((choice.message && choice.message.content) || ''),
     parsed: null,
-    usage: {
-      input: usage.prompt_tokens || 0,
-      output: usage.completion_tokens || 0,
-      cached: (usage.prompt_tokens_details && usage.prompt_tokens_details.cached_tokens) || 0,
-    },
+    usage: normalizedUsage,
     finishReason: choice.finish_reason || null,
     refusal: false,
     model: raw.model || null,
@@ -329,13 +331,14 @@ function parseJsonOutput(text) {
 /**
  * Custo em USD da chamada.
  *
- * Modelo local custa zero de verdade. Modelo remoto fora da tabela devolve
- * `known: false` — o chamador precisa saber que o valor é incerto, senão o
- * teto de orçamento vira ficção.
+ * Quando o provedor informa o valor cobrado, vale ele — é o número da fatura,
+ * e não uma estimativa. Sem isso, a tabela de preços. Modelo fora da tabela
+ * devolve `known: false`: o chamador precisa saber que o valor é incerto,
+ * senão o teto de orçamento vira ficção.
  */
 function computeCost(config, usage) {
-  if (isLocal(config.baseUrl)) {
-    return { usd: 0, known: true, reason: 'modelo local' };
+  if (typeof usage.costUsd === 'number') {
+    return { usd: Number(usage.costUsd.toFixed(6)), known: true, reason: 'informado pelo provedor' };
   }
 
   const price = PRICING[config.model];
@@ -358,17 +361,15 @@ function computeCost(config, usage) {
  * Decide, **antes** de chamar, se a chamada pode prosseguir.
  *
  * A decisão não pode depender do custo da própria chamada: esse número só
- * existe depois da resposta. O que dá para saber de antemão é se o modelo é
- * local, se ele tem preço conhecido, e quanto já foi gasto.
+ * existe depois da resposta. O que dá para saber de antemão é se o custo vai
+ * poder ser contado — o provedor informa, ou o modelo está na tabela — e
+ * quanto já foi gasto.
  *
- * Modelo remoto sem preço na tabela é barrado. Deixar passar transformaria o
- * teto em ficção — gastaria de verdade e contabilizaria zero.
+ * Modelo sem preço num provedor que não informa custo é barrado. Deixar passar
+ * transformaria o teto em ficção — gastaria de verdade e contabilizaria zero.
  */
 function canProceed(config, { spentUsd, limitUsd }) {
-  if (isLocal(config.baseUrl)) {
-    return { allowed: true, reason: null, billable: false };
-  }
-  if (!PRICING[config.model]) {
+  if (!reportsCost(config) && !PRICING[config.model]) {
     return {
       allowed: false,
       billable: true,
@@ -403,5 +404,5 @@ module.exports = {
   STRUCTURED_JSON,
   STRUCTURED_NONE,
   STRUCTURED_MODES,
-  isLocal,
+  reportsCost,
 };

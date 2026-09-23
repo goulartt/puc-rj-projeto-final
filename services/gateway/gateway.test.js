@@ -22,11 +22,19 @@ const ENV_ANTHROPIC = {
   LLM_EXTRACTION_API_KEY: 'chave-de-teste-nao-real',
 };
 
-const ENV_OLLAMA = {
-  LLM_QA_PROVIDER: 'openai',
-  LLM_QA_MODEL: 'qwen3:14b',
-  LLM_QA_BASE_URL: 'http://host.docker.internal:11434',
-  LLM_QA_API_KEY: 'ollama',
+const ENV_OPENROUTER = {
+  LLM_QA_PROVIDER: 'openrouter',
+  LLM_QA_MODEL: 'deepseek/deepseek-v4-flash',
+  LLM_QA_BASE_URL: 'https://openrouter.ai/api',
+  LLM_QA_API_KEY: 'chave-openrouter-de-teste',
+};
+
+// Mesma configuração no papel de extração, para os testes de custo.
+const ENV_OPENROUTER_EXTRACTION = {
+  LLM_EXTRACTION_PROVIDER: 'openrouter',
+  LLM_EXTRACTION_MODEL: 'deepseek/deepseek-v4-flash',
+  LLM_EXTRACTION_BASE_URL: 'https://openrouter.ai/api',
+  LLM_EXTRACTION_API_KEY: 'chave-openrouter-de-teste',
 };
 
 const PAYLOAD = {
@@ -45,9 +53,9 @@ test('resolve a configuracao a partir do prefixo do papel', () => {
 });
 
 test('apelidos de fornecedor resolvem para o protocolo certo', () => {
-  // O valor nomeia o protocolo HTTP, nao a empresa. Apontar a DeepSeek com
+  // O valor nomeia o protocolo HTTP, nao a empresa. Apontar a OpenRouter com
   // PROVIDER=openai confunde quem le o .env, entao o nome do fornecedor vale.
-  for (const alias of ['deepseek', 'ollama', 'openrouter', 'groq', 'openai-compatible']) {
+  for (const alias of ['openrouter', 'openai-compatible']) {
     const cfg = gw.resolveConfig('extraction', { ...ENV_ANTHROPIC, LLM_EXTRACTION_PROVIDER: alias });
     assert.equal(cfg.provider, 'openai', alias);
   }
@@ -93,7 +101,7 @@ test('anthropic: system em campo separado, fora de messages', () => {
 });
 
 test('openai: system vira a primeira mensagem', () => {
-  const req = gw.buildRequest(gw.resolveConfig('qa', ENV_OLLAMA), PAYLOAD);
+  const req = gw.buildRequest(gw.resolveConfig('qa', ENV_OPENROUTER), PAYLOAD);
   assert.equal(req.body.system, undefined);
   assert.equal(req.body.messages.length, 2);
   assert.equal(req.body.messages[0].role, 'system');
@@ -109,7 +117,7 @@ test('anthropic: cacheSystem marca o bloco, que e a economia entre perguntas', (
 });
 
 test('openai: cacheSystem e ignorado, nao vaza campo invalido', () => {
-  const req = gw.buildRequest(gw.resolveConfig('qa', ENV_OLLAMA), { ...PAYLOAD, cacheSystem: true });
+  const req = gw.buildRequest(gw.resolveConfig('qa', ENV_OPENROUTER), { ...PAYLOAD, cacheSystem: true });
   assert.equal(JSON.stringify(req.body).includes('cache_control'), false);
 });
 
@@ -124,14 +132,14 @@ test('anthropic: schema vai em output_config.format', () => {
 });
 
 test('openai: schema vai em response_format.json_schema', () => {
-  const req = gw.buildRequest(gw.resolveConfig('qa', ENV_OLLAMA), { ...PAYLOAD, schema: SCHEMA });
+  const req = gw.buildRequest(gw.resolveConfig('qa', ENV_OPENROUTER), { ...PAYLOAD, schema: SCHEMA });
   assert.equal(req.body.response_format.type, 'json_schema');
   assert.equal(req.body.response_format.json_schema.schema, SCHEMA);
   assert.equal(req.body.output_config, undefined);
 });
 
 test('sem schema, nenhum campo de saida estruturada e enviado', () => {
-  for (const [role, env] of [['extraction', ENV_ANTHROPIC], ['qa', ENV_OLLAMA]]) {
+  for (const [role, env] of [['extraction', ENV_ANTHROPIC], ['qa', ENV_OPENROUTER]]) {
     const req = gw.buildRequest(gw.resolveConfig(role, env), PAYLOAD);
     assert.equal(req.body.output_config, undefined);
     assert.equal(req.body.response_format, undefined);
@@ -143,37 +151,32 @@ test('cabecalhos de autenticacao diferem por provedor', () => {
   assert.equal(a.headers['x-api-key'], 'chave-de-teste-nao-real');
   assert.equal(a.headers['anthropic-version'], '2023-06-01');
 
-  const o = gw.buildRequest(gw.resolveConfig('qa', ENV_OLLAMA), PAYLOAD);
-  assert.equal(o.headers.authorization, 'Bearer ollama');
+  const o = gw.buildRequest(gw.resolveConfig('qa', ENV_OPENROUTER), PAYLOAD);
+  assert.equal(o.headers.authorization, 'Bearer chave-openrouter-de-teste');
 });
 
 test('messages vazio e erro, nao requisicao malformada', () => {
   assert.throws(
-    () => gw.buildRequest(gw.resolveConfig('qa', ENV_OLLAMA), { ...PAYLOAD, messages: [] }),
+    () => gw.buildRequest(gw.resolveConfig('qa', ENV_OPENROUTER), { ...PAYLOAD, messages: [] }),
     /messages vazio/,
   );
 });
 
-test('modo json pede JSON sintatico, nao schema — e o que a DeepSeek aceita', () => {
-  const cfg = gw.resolveConfig('extraction', {
-    LLM_EXTRACTION_PROVIDER: 'deepseek',
-    LLM_EXTRACTION_MODEL: 'deepseek-v4-flash',
-    LLM_EXTRACTION_BASE_URL: 'https://api.deepseek.com',
-    LLM_EXTRACTION_API_KEY: 'x',
-  });
+test('modo json pede JSON sintatico, nao schema', () => {
+  const cfg = gw.resolveConfig('extraction', ENV_OPENROUTER_EXTRACTION);
   const req = gw.buildRequest(cfg, { ...PAYLOAD, schema: SCHEMA, structuredMode: gw.STRUCTURED_JSON });
   assert.deepEqual(req.body.response_format, { type: 'json_object' });
 });
 
 test('modo none nao envia response_format algum', () => {
-  const req = gw.buildRequest(gw.resolveConfig('qa', ENV_OLLAMA), {
+  const req = gw.buildRequest(gw.resolveConfig('qa', ENV_OPENROUTER), {
     ...PAYLOAD, schema: SCHEMA, structuredMode: gw.STRUCTURED_NONE,
   });
   assert.equal(req.body.response_format, undefined);
 });
 
 test('modo schema continua sendo o padrao', () => {
-  const req = gw.buildRequest(gw.resolveConfig('qa', ENV_OLLAMA), { ...PAYLOAD, schema: SCHEMA });
+  const req = gw.buildRequest(gw.resolveConfig('qa', ENV_OPENROUTER), { ...PAYLOAD, schema: SCHEMA });
   assert.equal(req.body.response_format.type, 'json_schema');
 });
 
@@ -187,9 +190,9 @@ test('anthropic mantem o schema completo mesmo no modo json', () => {
 
 // ─── Diferença 3: formato do usage ──────────────────────────────────────────
 
-// Resposta real do Ollama, capturada em 05/08/2026.
-const RAW_OLLAMA = {
-  model: 'qwen3:14b',
+// Resposta sem `usage.cost`, como a de um provedor OpenAI-compatível qualquer.
+const RAW_OPENROUTER = {
+  model: 'deepseek/deepseek-v4-flash',
   choices: [{ message: { role: 'assistant', content: 'Brasília' }, finish_reason: 'stop' }],
   usage: { prompt_tokens: 26, completion_tokens: 110, total_tokens: 136 },
 };
@@ -203,7 +206,7 @@ const RAW_ANTHROPIC = {
 };
 
 test('normaliza usage do openai', () => {
-  const r = gw.normalizeResponse('openai', RAW_OLLAMA);
+  const r = gw.normalizeResponse('openai', RAW_OPENROUTER);
   assert.deepEqual(r.usage, { input: 26, output: 110, cached: 0 });
   assert.equal(r.text, 'Brasília');
   assert.equal(r.finishReason, 'stop');
@@ -240,8 +243,8 @@ test('openai: descarta o raciocinio delimitado que veio no corpo', () => {
 });
 
 test('openai: descarta o raciocinio mesmo sem a abertura casada', () => {
-  // Observado em producao: o qwen3 emitiu um token de lixo no lugar de
-  // `<think>`, o Ollama nao reconheceu o bloco e mandou tudo em `content`. A
+  // Observado em producao: o modelo emitiu um token de lixo no lugar de
+  // `<think>`, o provedor nao reconheceu o bloco e mandou tudo em `content`. A
   // pessoa recebeu o raciocinio em ingles como se fosse a resposta.
   const r = gw.normalizeResponse('openai', {
     choices: [{ message: {
@@ -292,9 +295,31 @@ test('texto que nao e JSON devolve null em vez de estourar', () => {
 
 // ─── Custo e teto de orçamento ──────────────────────────────────────────────
 
-test('modelo local custa zero, e isso e sabido', () => {
-  const cost = gw.computeCost(gw.resolveConfig('qa', ENV_OLLAMA), { input: 5000, output: 2000 });
-  assert.deepEqual(cost, { usd: 0, known: true, reason: 'modelo local' });
+test('openrouter: usage.cost entra no usage normalizado', () => {
+  // Formato documentado: o custo cobrado vem sempre, sem parametro nenhum.
+  const r = gw.normalizeResponse('openai', {
+    ...RAW_OPENROUTER,
+    usage: { prompt_tokens: 12291, completion_tokens: 4318, total_tokens: 16609,
+             prompt_tokens_details: { cached_tokens: 12288 }, cost: 0.00063 },
+  });
+  assert.deepEqual(r.usage, { input: 12291, output: 4318, cached: 12288, costUsd: 0.00063 });
+});
+
+test('custo informado pelo provedor vence a tabela', () => {
+  // O preco de um mesmo modelo muda conforme o provedor que a OpenRouter
+  // escolhe por tras. O numero da fatura vale mais que qualquer tabela.
+  const cfg = gw.resolveConfig('extraction', ENV_OPENROUTER_EXTRACTION);
+  const cost = gw.computeCost(cfg, { input: 12291, output: 4318, cached: 12288, costUsd: 0.00063 });
+  assert.deepEqual(cost, { usd: 0.00063, known: true, reason: 'informado pelo provedor' });
+});
+
+test('custo ausente nao vira zero', () => {
+  // Sem `usage.cost` e sem o modelo na tabela, o valor e incerto — e o
+  // chamador precisa saber, senao o teto para de contar.
+  const cfg = gw.resolveConfig('extraction', ENV_OPENROUTER_EXTRACTION);
+  const r = gw.normalizeResponse('openai', RAW_OPENROUTER);
+  assert.equal('costUsd' in r.usage, false);
+  assert.equal(gw.computeCost(cfg, r.usage).known, false);
 });
 
 test('calcula custo do anthropic pela tabela', () => {
@@ -311,46 +336,18 @@ test('token lido do cache usa o preco de cache do proprio modelo', () => {
   assert.equal(gw.computeCost(anthropic, { input: 1e6, output: 0, cached: 1e6 }).usd, 0.5);
 });
 
-test('preco de cache e por modelo, nao um multiplicador unico', () => {
-  // A Anthropic cobra 10% da entrada pelo cache; a DeepSeek cobra 2%. Uma
-  // constante compartilhada erraria um dos dois, e o teto de orcamento depende
-  // desse numero.
-  const deepseek = gw.resolveConfig('extraction', {
-    LLM_EXTRACTION_PROVIDER: 'openai',
-    LLM_EXTRACTION_MODEL: 'deepseek-v4-flash',
-    LLM_EXTRACTION_BASE_URL: 'https://api.deepseek.com',
-    LLM_EXTRACTION_API_KEY: 'x',
-  });
-  assert.equal(gw.computeCost(deepseek, { input: 1e6, output: 0, cached: 0 }).usd, 0.14);
-  assert.equal(gw.computeCost(deepseek, { input: 1e6, output: 0, cached: 1e6 }).usd, 0.0028);
-
-  const ratioAnthropic = 0.5 / 5;
-  const ratioDeepseek = 0.0028 / 0.14;
-  assert.notEqual(ratioAnthropic, ratioDeepseek);
-});
-
-test('deepseek e remoto e faturavel, entao respeita o teto', () => {
-  const cfg = gw.resolveConfig('extraction', {
-    LLM_EXTRACTION_PROVIDER: 'openai',
-    LLM_EXTRACTION_MODEL: 'deepseek-v4-flash',
-    LLM_EXTRACTION_BASE_URL: 'https://api.deepseek.com',
-    LLM_EXTRACTION_API_KEY: 'x',
-  });
-  assert.equal(gw.canProceed(cfg, { spentUsd: 0, limitUsd: 5 }).billable, true);
+test('openrouter respeita o teto sem precisar de tabela', () => {
+  // Ela informa o custo, entao qualquer modelo do catalogo pode ser usado sem
+  // precificacao manual — e o teto continua valendo.
+  const cfg = gw.resolveConfig('extraction', ENV_OPENROUTER_EXTRACTION);
+  assert.equal(gw.reportsCost(cfg), true);
+  assert.equal(gw.canProceed(cfg, { spentUsd: 0, limitUsd: 5 }).allowed, true);
   assert.equal(gw.canProceed(cfg, { spentUsd: 5, limitUsd: 5 }).allowed, false);
 });
 
-test('custo real de uma extracao de edital cabe no orcamento', () => {
-  // ~12k tokens de entrada e ~4k de saida: e a ordem de grandeza medida no
-  // edital de exemplo. Serve para o custo por edital nao mudar sem alguem ver.
-  const cfg = gw.resolveConfig('extraction', {
-    LLM_EXTRACTION_PROVIDER: 'openai',
-    LLM_EXTRACTION_MODEL: 'deepseek-v4-flash',
-    LLM_EXTRACTION_BASE_URL: 'https://api.deepseek.com',
-    LLM_EXTRACTION_API_KEY: 'x',
-  });
-  const cost = gw.computeCost(cfg, { input: 12000, output: 4000, cached: 0 });
-  assert.ok(cost.usd < 0.01, `esperado abaixo de 1 centavo, veio ${cost.usd}`);
+test('anthropic direto nao informa custo, e depende da tabela', () => {
+  const cfg = gw.resolveConfig('extraction', ENV_ANTHROPIC);
+  assert.equal(gw.reportsCost(cfg), false);
 });
 
 test('modelo remoto fora da tabela nao vira custo zero', () => {
@@ -379,42 +376,27 @@ test('teto atingido barra a chamada, e a decisao nao depende do custo dela', () 
   assert.match(gw.canProceed(cfg, { spentUsd: 7, limitUsd: 5 }).reason, /teto de orcamento/);
 });
 
-test('modelo local nunca e barrado pelo teto, e nao e faturavel', () => {
-  const cfg = gw.resolveConfig('qa', ENV_OLLAMA);
-  const d = gw.canProceed(cfg, { spentUsd: 999, limitUsd: 5 });
-  assert.equal(d.allowed, true);
-  assert.equal(d.billable, false);
-});
-
-// ─── Detecção de host local ─────────────────────────────────────────────────
+// ─── Detecção de host ───────────────────────────────────────────────────────
 
 test('nao depende do global URL, que o sandbox do n8n nao expoe', () => {
-  // Regressao: a versao anterior usava `new URL()` dentro de try/catch. No no
-  // de codigo do n8n o ReferenceError era engolido, todo host virava remoto, e
-  // o Ollama local passou a ser barrado como modelo pago sem preco.
+  // Regressao: uma versao anterior usava `new URL()` dentro de try/catch. No no
+  // de codigo do n8n o ReferenceError era engolido em silencio e a
+  // classificacao de endereco errava sem avisar.
   const saved = globalThis.URL;
   try {
     delete globalThis.URL;
-    assert.equal(gw.isLocal('http://ollama:11434'), true);
-    assert.equal(gw.isLocal('https://api.anthropic.com'), false);
+    assert.equal(gw.reportsCost({ baseUrl: 'https://openrouter.ai/api' }), true);
+    assert.equal(gw.reportsCost({ baseUrl: 'https://api.anthropic.com' }), false);
   } finally {
     globalThis.URL = saved;
   }
 });
 
-test('reconhece os enderecos locais usados no compose', () => {
-  for (const url of [
-    'http://localhost:11434',
-    'http://127.0.0.1:11434',
-    'http://host.docker.internal:11434',
-    'http://ollama:11434',
-    'http://ollama:11434/',
-    'http://[::1]:11434',
-  ]) {
-    assert.equal(gw.isLocal(url), true, url);
-  }
-  assert.equal(gw.isLocal('https://api.anthropic.com'), false);
-  assert.equal(gw.isLocal('https://openrouter.ai/api'), false);
+test('openrouter recebe os cabecalhos de identificacao da aplicacao', () => {
+  const req = gw.buildRequest(gw.resolveConfig('qa', ENV_OPENROUTER), PAYLOAD);
+  assert.equal(req.url, 'https://openrouter.ai/api/v1/chat/completions');
+  assert.equal(req.headers['x-title'], 'Arremata AI');
+  assert.ok(req.headers['http-referer']);
 });
 
 // ─── Controle de raciocínio ────────────────────────────────────────────────
@@ -424,8 +406,8 @@ test('reconhece os enderecos locais usados no compose', () => {
 // sobre os 147 segundos, e cada provedor a expõe de um jeito.
 
 test('openai: reasoning vira reasoning_effort, sem traducao', () => {
-  const config = { provider: 'openai', model: 'deepseek-v4-flash',
-                   baseUrl: 'https://api.deepseek.com', apiKey: 'k' };
+  const config = { provider: 'openai', model: 'deepseek/deepseek-v4-flash',
+                   baseUrl: 'https://openrouter.ai/api', apiKey: 'k' };
   const { body } = gw.buildRequest(config, {
     messages: [{ role: 'user', content: 'oi' }], reasoning: 'none',
   });
@@ -433,8 +415,8 @@ test('openai: reasoning vira reasoning_effort, sem traducao', () => {
 });
 
 test('openai: sem reasoning o campo nao vai no corpo', () => {
-  const config = { provider: 'openai', model: 'qwen3:14b',
-                   baseUrl: 'http://localhost:11434', apiKey: 'ollama' };
+  const config = { provider: 'openai', model: 'deepseek/deepseek-v4-flash',
+                   baseUrl: 'https://openrouter.ai/api', apiKey: 'k' };
   const { body } = gw.buildRequest(config, { messages: [{ role: 'user', content: 'oi' }] });
   assert.ok(!('reasoning_effort' in body));
 });

@@ -48,7 +48,6 @@ Com ela, o campo fica confiável o bastante para consultar uma fonte externa.
 | `docling` | PDF → Markdown | 5001 |
 | `postgres` | fichas, custo de LLM, dedupe do scrape | 5434 |
 | `cloudflared` | URL HTTPS pública para o webhook do Telegram | — |
-| `ollama` | LLM local do Estágio 3 (profile `local-llm`) | 11434 |
 
 ### Decisões de infraestrutura, e por quê
 
@@ -72,28 +71,13 @@ texto; rodar OCR neles é lento e introduz ruído de transcrição. O parâmetro
 `ocr=true` cobre os digitalizados, e usa `rapidocr` explicitamente — o seletor
 automático poderia escolher um engine que não está na imagem.
 
-**Ollama roda no host, não em container.** O Docker desta máquina não tem
-`nvidia-container-toolkit`, então um Ollama containerizado ficaria em CPU. Mas
-o toolkit só é necessário para *containers*: processo nativo do WSL enxerga a
-GPU direto. O Ollama instalado no host usa a RTX 4070 Ti Super sem nenhum
-ajuste, e o n8n o alcança por `host.docker.internal:11434`.
-
-Isso exige que o Ollama escute além do loopback, o que o instalador oficial não
-faz por padrão:
-
-```
-sudo mkdir -p /etc/systemd/system/ollama.service.d
-printf '[Service]\nEnvironment="OLLAMA_HOST=0.0.0.0"\n' \
-  | sudo tee /etc/systemd/system/ollama.service.d/override.conf
-sudo systemctl daemon-reload && sudo systemctl restart ollama
-```
-
-Sem isso, containers não alcançam o serviço — loopback do host não é acessível
-de dentro de um container. O perfil `ollama-bridge` no compose cobre esse caso
-com um encaminhador `socat`, para quem não puder mexer no systemd.
-
-O serviço `ollama` do compose continua existindo no perfil `local-llm`, para
-máquinas onde o toolkit esteja instalado.
+**Nenhum modelo roda na máquina.** Os dois estágios chamam a OpenRouter. Até
+setembro de 2026 o Q&A rodava num `qwen3:14b` local via Ollama, numa RTX 4070
+Ti Super, e a extração chamava a API da DeepSeek direto. A troca tirou do
+projeto a dependência de GPU, a configuração de rede do Ollama no WSL (ele só
+escutava no loopback, e os contêineres não o alcançavam) e o segundo contrato
+de API. O preço disso é que a pergunta deixou de ser gratuita; o custo medido
+está no README.
 
 ## Camada de modelo
 

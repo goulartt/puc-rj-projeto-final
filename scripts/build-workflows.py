@@ -533,13 +533,10 @@ const systemPrompt = $('Buscar prompt de analista').first().json.text;
 const schema = $('Buscar schema da ficha').first().json.schema;
 
 // Decodificação restrita é otimização, não garantia: quem valida a ficha é o
-// serviço de documentos, logo adiante. O Ollama nao consegue compilar um
-// schema deste tamanho em gramatica GBNF, entao ela fica desligavel por
-// variavel de ambiente sem que o pipeline perca correcao.
-// schema | json | none — o que o provedor consegue impor. A DeepSeek recusa
-// json_schema ("This response_format type is unavailable now") e aceita json;
-// o Ollama nao compila um schema deste tamanho em gramatica. Em qualquer modo
-// quem garante o contrato e a validacao posterior.
+// serviço de documentos, logo adiante. Nem todo modelo aceita um schema deste
+// tamanho, entao ela fica desligavel por variavel de ambiente sem que o
+// pipeline perca correcao: schema | json | none, o que o provedor consegue
+// impor. Em qualquer modo quem garante o contrato e a validacao posterior.
 const structuredMode = String($env.LLM_EXTRACTION_STRUCTURED || 'schema');
 const providerEnforcesSchema = structuredMode === 'schema';
 

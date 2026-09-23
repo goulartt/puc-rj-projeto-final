@@ -113,10 +113,9 @@ def prompt(name: str) -> JSONResponse:
 def _dereference(node: Any, defs: dict, depth: int = 0) -> Any:
     """Expande `$ref` locais, devolvendo um schema sem `$defs`.
 
-    O Ollama compila o schema numa gramática GBNF para decodificação
-    restrita e falha com "failed to parse grammar" diante de `$ref`. A API da
-    Anthropic aceita referências, mas a forma achatada funciona nos dois, então
-    é ela que servimos.
+    Parte dos provedores de decodificação restrita não resolve `$ref` e falha
+    ao compilar o schema. A forma achatada funciona em todos, então é ela que
+    servimos.
 
     A profundidade é limitada porque `$ref` recursivo geraria expansão
     infinita. O schema da ficha não tem recursão; o limite é rede de proteção.

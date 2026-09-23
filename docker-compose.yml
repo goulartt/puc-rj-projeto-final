@@ -1,7 +1,9 @@
 # Assistente de Leilão de Imóveis — infraestrutura local
 #
-#   docker compose up -d                      # núcleo: n8n + docling + postgres + túnel
-#   docker compose --profile local-llm up -d  # + ollama (exige nvidia-container-toolkit)
+#   docker compose up -d      # n8n + docling + postgres + túnel
+#
+# Os modelos rodam fora daqui, pela OpenRouter: nenhum serviço de LLM local,
+# nenhuma GPU exigida. Basta OPENROUTER_API_KEY no .env.
 #
 # O webhook do Telegram precisa de uma URL HTTPS pública. O n8n 2.x removeu a
 # flag `--tunnel`, então usamos um quick tunnel do Cloudflare — sem conta, URL
@@ -114,22 +116,25 @@ services:
 
       # Variáveis consumidas pelos fluxos
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
-      LLM_EXTRACTION_PROVIDER: ${LLM_EXTRACTION_PROVIDER}
-      LLM_EXTRACTION_MODEL: ${LLM_EXTRACTION_MODEL}
-      LLM_EXTRACTION_BASE_URL: ${LLM_EXTRACTION_BASE_URL}
-      LLM_EXTRACTION_API_KEY: ${LLM_EXTRACTION_API_KEY}
+      # Os dois papéis vão à OpenRouter por padrão, com a mesma chave. Cada
+      # variável pode ser sobrescrita no .env — é assim que se troca o modelo
+      # de um papel, ou se aponta a extração para a Anthropic direto.
+      LLM_EXTRACTION_PROVIDER: ${LLM_EXTRACTION_PROVIDER:-openrouter}
+      LLM_EXTRACTION_MODEL: ${LLM_EXTRACTION_MODEL:-deepseek/deepseek-v4-flash}
+      LLM_EXTRACTION_BASE_URL: ${LLM_EXTRACTION_BASE_URL:-https://openrouter.ai/api}
+      LLM_EXTRACTION_API_KEY: ${LLM_EXTRACTION_API_KEY:-${OPENROUTER_API_KEY}}
       # schema | json | none — quanto de estrutura o provedor consegue impor.
-      LLM_EXTRACTION_STRUCTURED: ${LLM_EXTRACTION_STRUCTURED:-schema}
+      LLM_EXTRACTION_STRUCTURED: ${LLM_EXTRACTION_STRUCTURED:-json}
       LLM_EXTRACTION_MAX_TOKENS: ${LLM_EXTRACTION_MAX_TOKENS:-16000}
       # Quanto o modelo pensa. Vazio = padrao do provedor. Ver a medicao em
       # docs/evidence/ antes de mexer: e a unica alavanca com efeito real sobre
       # o tempo, e o efeito na qualidade da ficha esta medido la.
       LLM_EXTRACTION_REASONING: ${LLM_EXTRACTION_REASONING:-minimal}
-      LLM_QA_REASONING: ${LLM_QA_REASONING:-}
-      LLM_QA_PROVIDER: ${LLM_QA_PROVIDER}
-      LLM_QA_MODEL: ${LLM_QA_MODEL}
-      LLM_QA_BASE_URL: ${LLM_QA_BASE_URL}
-      LLM_QA_API_KEY: ${LLM_QA_API_KEY}
+      LLM_QA_REASONING: ${LLM_QA_REASONING:-minimal}
+      LLM_QA_PROVIDER: ${LLM_QA_PROVIDER:-openrouter}
+      LLM_QA_MODEL: ${LLM_QA_MODEL:-deepseek/deepseek-v4-flash}
+      LLM_QA_BASE_URL: ${LLM_QA_BASE_URL:-https://openrouter.ai/api}
+      LLM_QA_API_KEY: ${LLM_QA_API_KEY:-${OPENROUTER_API_KEY}}
       BUDGET_USD_LIMIT: ${BUDGET_USD_LIMIT}
       DATAJUD_API_KEY: ${DATAJUD_API_KEY}
       DATAJUD_BASE_URL: ${DATAJUD_BASE_URL}
@@ -145,47 +150,7 @@ services:
       - ./data:/data:ro
     ports:
       - "127.0.0.1:5678:5678"
-    extra_hosts:
-      # Permite apontar LLM_QA_BASE_URL para um Ollama rodando no host
-      # (WSL ou Windows) em vez do container: http://host.docker.internal:11434
-      - "host.docker.internal:host-gateway"
-
-  ollama-bridge:
-    # Contorno para Ollama instalado no host escutando só em 127.0.0.1, que é o
-    # padrão do instalador oficial. Containers não alcançam o loopback do host,
-    # então este encaminhador roda na rede do host e reexpõe a porta.
-    #   docker compose --profile ollama-bridge up -d
-    #   LLM_QA_BASE_URL=http://host.docker.internal:11435
-    #
-    # O ajuste definitivo dispensa esta ponte e exige root uma única vez:
-    #   sudo systemctl edit --force ollama   →  Environment="OLLAMA_HOST=0.0.0.0"
-    #   sudo systemctl restart ollama        →  LLM_QA_BASE_URL=http://host.docker.internal:11434
-    profiles: ["ollama-bridge"]
-    image: alpine/socat:latest
-    restart: unless-stopped
-    network_mode: host
-    command: TCP-LISTEN:11435,fork,reuseaddr TCP:127.0.0.1:11434
-
-  ollama:
-    # Opcional. Exige nvidia-container-toolkit instalado; sem ele o container
-    # sobe em CPU e fica lento demais para ser útil.
-    #   docker compose --profile local-llm up -d
-    profiles: ["local-llm"]
-    image: ollama/ollama:latest
-    restart: unless-stopped
-    volumes:
-      - ollama-data:/root/.ollama
-    ports:
-      - "127.0.0.1:11434:11434"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
 
 volumes:
   postgres-data:
   n8n-data:
-  ollama-data:

@@ -46,14 +46,18 @@ instrui explicitamente a resumir **risco procedimental, não pessoas**.
 |---|---|---|
 | Conversão do PDF | container local (Docling) | nada |
 | Extratores determinísticos | local | nada |
-| Extração da ficha (Estágio 1) | **API do provedor** | o texto do edital |
+| Extração da ficha (Estágio 1) | **OpenRouter** | o texto do edital |
 | Consulta processual | API pública do CNJ | só o número do processo |
-| Q&A (Estágio 3) | local (Ollama) ou API | ficha e pergunta, nunca o edital inteiro |
+| Q&A (Estágio 3) | **OpenRouter** | ficha e pergunta, nunca o edital inteiro |
 
 O Estágio 1 é o único que envia o documento a terceiro. Isso é consequência
 direta do desenho de dois estágios: o edital sai **uma vez**, e as perguntas
-seguintes trafegam só a ficha. Rodar o Estágio 1 local também é possível
-trocando `LLM_EXTRACTION_PROVIDER` — a decisão fica com quem opera.
+seguintes trafegam só a ficha.
+
+A OpenRouter é intermediária: o texto passa por ela e segue para o provedor que
+ela escolher para o modelo pedido. Quem opera o sistema herda as políticas de
+retenção dos dois, e a OpenRouter permite, na configuração da conta, excluir
+provedores que treinam com os dados recebidos.
 
 O `chat_id` nunca vai para provedor de LLM.
 

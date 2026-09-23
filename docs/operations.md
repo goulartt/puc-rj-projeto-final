@@ -10,7 +10,7 @@ sem editar fluxo nenhum.
 | Editor do n8n | `http://localhost:5678` | conta de dono do n8n |
 | Serviço de documentos | `http://localhost:5001` | nenhuma (só rede local) |
 | Postgres | `localhost:5434`, base `leilao` | usuário `leilao` |
-| Ollama (host) | `http://localhost:11434` | nenhuma |
+| OpenRouter | `https://openrouter.ai/api` | `OPENROUTER_API_KEY` |
 | Webhook público | valor de `WEBHOOK_URL` no `.env` | — |
 | Bot | [@LeilaoImovelAnaliseBot](https://t.me/LeilaoImovelAnaliseBot) | — |
 
@@ -116,7 +116,7 @@ relógio está. Medição de 06/08/2026, edital de exemplo:
 | Conversão do PDF (Docling) | 3,9 s | 2,6% |
 | **Extração da ficha (DeepSeek)** | **147 s** | **97,4%** |
 | Consulta processual, tradução, envio | < 0,1 s | ~0% |
-| Pergunta no Q&A (qwen3:14b local) | 13–33 s | — |
+| Pergunta no Q&A (`qwen3:14b` local, configuração anterior) | 13–33 s | — |
 
 O modelo é o gargalo, e nada mais chega perto: os nós de código, as consultas
 ao Postgres e as chamadas ao serviço de documentos somam menos de 100 ms.
@@ -160,16 +160,15 @@ docker compose logs -f docling    # conversão de PDF e tempo gasto
 ## Trocar de modelo
 
 Tudo por `.env`, sem tocar em fluxo. `role` é `extraction` (uma vez por edital,
-cara) ou `qa` (por pergunta, barata).
+cara) ou `qa` (por pergunta, barata). Os dois vão à OpenRouter por padrão, com
+`OPENROUTER_API_KEY`; trocar o modelo é pôr outro ID do catálogo
+(<https://openrouter.ai/models>):
 
 ```bash
-# Q&A no DeepSeek em vez do modelo local
-LLM_QA_PROVIDER=openai
-LLM_QA_MODEL=deepseek-v4-flash
-LLM_QA_BASE_URL=https://api.deepseek.com
-LLM_QA_API_KEY=<chave>
+# outro modelo nas perguntas, ainda pela OpenRouter
+LLM_QA_MODEL=qwen/qwen3-30b-a3b
 
-# Extração no Claude
+# extração na Anthropic direto, sem a OpenRouter no meio
 LLM_EXTRACTION_PROVIDER=anthropic
 LLM_EXTRACTION_MODEL=claude-sonnet-5
 LLM_EXTRACTION_BASE_URL=https://api.anthropic.com
@@ -188,26 +187,25 @@ não chega, o fluxo segue usando o modelo anterior e nada avisa.
 
 ### Duas armadilhas
 
-**Modelo remoto sem preço é bloqueado.** O gateway recusa a chamada e diz o que
-fazer. Não é bug: sem preço conhecido o teto de orçamento viraria ficção —
-gastaria de verdade e contabilizaria zero. Modelos já precificados em
-`services/gateway/gateway.js`:
+**Pela OpenRouter, qualquer modelo do catálogo passa.** Ela devolve em
+`usage.cost` o valor cobrado, e é esse número que vai para `llm_calls` — não
+há tabela de preço a manter.
 
-`claude-opus-5` · `claude-opus-4-8` · `claude-sonnet-5` · `claude-haiku-4-5` ·
-`deepseek-v4-flash` · `deepseek-v4-pro`
-
-Modelo local (`localhost`, `host.docker.internal`, `ollama`) nunca é bloqueado,
-porque não há o que contabilizar.
+**Anthropic direto exige o modelo na tabela.** A Messages API não informa
+custo, então o gateway calcula pela tabela de `services/gateway/gateway.js` e
+recusa modelo que não esteja nela: sem preço conhecido o teto de orçamento
+viraria ficção, gastaria de verdade e contabilizaria zero. Precificados hoje:
+`claude-opus-5` · `claude-opus-4-8` · `claude-sonnet-5` · `claude-haiku-4-5`.
 
 **`LLM_EXTRACTION_STRUCTURED` tem três níveis** porque os provedores diferem de
 verdade. Só existe para a extração: a pergunta não pede saída estruturada, e
 não há `LLM_QA_STRUCTURED`.
 
-| Valor | Para quem | O que acontece se errar |
-|---|---|---|
-| `schema` | Anthropic | DeepSeek responde 400: "This response_format type is unavailable now" |
-| `json` | DeepSeek e compatíveis | — |
-| `none` | Ollama | com `schema`, falha em "failed to parse grammar" acima de ~200 tokens |
+| Valor | Quando usar |
+|---|---|
+| `schema` | modelo que aceita JSON Schema (Anthropic; na OpenRouter, os que listam `structured_outputs`) |
+| `json` | padrão: só garante JSON sintático, e a validação posterior cobre o resto |
+| `none` | modelo que nem `json_object` aceita; o schema vai no texto do prompt |
 
 ### Testar a troca sem envolver o Telegram
 

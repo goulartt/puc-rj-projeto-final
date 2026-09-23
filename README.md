@@ -145,7 +145,7 @@ processamento em três estágios:
               ↓
 ┌─ ESTÁGIO 3 — N vezes por edital ────────────────────────────────┐
 │  filtro de escopo (determinístico) → pergunta + ficha +         │
-│  situação processual → modelo pequeno local → resposta          │
+│  situação processual → modelo barato via OpenRouter → resposta  │
 │  citando o documento e separando as duas fontes                 │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -207,10 +207,13 @@ ponto.
 
 #### 2.5 Camada de modelo trocável
 
-Toda chamada de modelo passa pelo sub-fluxo `00-llm-gateway`, que tem dois
-adaptadores: `anthropic` (Messages API) e `openai` (chat/completions, protocolo
-que Ollama, DeepSeek, OpenRouter, Groq e vLLM também aceitam). O gateway
-normaliza as diferenças entre provedores:
+Toda chamada de modelo passa pelo sub-fluxo `00-llm-gateway`. Os dois estágios
+falam com a [OpenRouter](https://openrouter.ai), que dá acesso a centenas de
+modelos com uma chave só; trocar de modelo é trocar uma variável de ambiente
+por qualquer ID do catálogo. O gateway tem dois adaptadores, `openai`
+(chat/completions, o protocolo da OpenRouter) e `anthropic` (Messages API, para
+quem quiser falar com a Anthropic direto), e normaliza as diferenças entre
+eles:
 
 | Conceito | `anthropic` | `openai` |
 |---|---|---|
@@ -222,18 +225,27 @@ Com o `usage` normalizado, o gateway grava o custo de cada chamada e recusa a
 próxima quando o acumulado passa de `BUDGET_USD_LIMIT`. A recusa acontece antes
 de a chamada ser feita.
 
-O gateway também impede que o raciocínio do modelo chegue à pessoa, um problema
-que só apareceu em produção. A Messages API entrega o raciocínio num bloco
-próprio e o Ollama num campo separado, mas essa separação depende de o modelo
-gerar a marca `<think>` de abertura, e essa marca é texto gerado como qualquer
-outro. Numa resposta do qwen3, um token espúrio saiu no lugar da abertura, e o
-raciocínio inteiro, em inglês, foi entregue como se fosse a resposta. Desde
-então o gateway corta o texto pela marca de fechamento, que apareceu mesmo
-nesse caso.
+O custo gravado é o que a OpenRouter informa ter cobrado, no campo
+`usage.cost` da resposta. Uma tabela de preços fixa erraria aqui, porque a
+OpenRouter escolhe entre vários provedores por trás de cada modelo e o preço
+muda com a escolha: no catálogo, `deepseek/deepseek-v4-flash` aparecia com
+saída a US$ 0,131 por milhão de tokens, e variantes datadas do mesmo modelo,
+entre US$ 0,55 e 0,64. A tabela continua existindo só para a Anthropic
+chamada direto, que não informa o custo.
 
-Na avaliação, a extração usou `deepseek-v4-flash` com
-`reasoning_effort=minimal`, e as perguntas usaram `qwen3:14b` via Ollama numa
-RTX 4070 Ti Super de 16 GB.
+O gateway também impede que o raciocínio do modelo chegue à pessoa, um problema
+que só apareceu em produção. Os provedores costumam entregar o raciocínio num
+campo separado, mas essa separação depende de o modelo gerar a marca `<think>`
+de abertura, e essa marca é texto gerado como qualquer outro. Numa resposta, um
+token espúrio saiu no lugar da abertura, e o raciocínio inteiro, em inglês, foi
+entregue como se fosse a resposta. Desde então o gateway corta o texto pela
+marca de fechamento, que apareceu mesmo nesse caso.
+
+A configuração atual usa `deepseek/deepseek-v4-flash` nos dois estágios, com
+`reasoning_effort=minimal`. As versões anteriores do projeto chamavam a API da
+DeepSeek direto na extração e rodavam as perguntas num `qwen3:14b` local via
+Ollama; os resultados da seção 3 indicam em qual configuração cada número foi
+medido.
 
 #### 2.6 Privacidade
 
@@ -258,7 +270,7 @@ isso.
 | `docling` | PDF → Markdown, com OCR opcional (`rapidocr`) |
 | `postgres` | fichas, consultas processuais, custo por chamada |
 | `cloudflared` | URL HTTPS pública para o webhook do Telegram |
-| Ollama (host) | modelo local do Estágio 3 |
+| OpenRouter (externo) | os dois modelos, com uma chave só |
 
 | Fluxo | Papel |
 |---|---|
@@ -429,33 +441,23 @@ e avaliar as respostas contra um gabarito, além da cobertura de termos.
 ### 6. Instalação
 
 Pré-requisitos: Docker com Compose, Python 3, Node.js, um bot criado no
-[@BotFather](https://t.me/BotFather) e, para o Q&A local, o
-[Ollama](https://ollama.com) instalado no host (de preferência com GPU).
+[@BotFather](https://t.me/BotFather) e uma chave da
+[OpenRouter](https://openrouter.ai/keys). Não é preciso GPU: nenhum modelo roda
+na máquina.
 
 ```bash
 git clone https://github.com/goulartt/puc-rj-projeto-final.git
 cd puc-rj-projeto-final
-cp .env.example .env      # token do Telegram, chaves do provedor e do DataJud
+cp .env.example .env      # token do Telegram, chave da OpenRouter e do DataJud
 docker compose up -d
 ```
 
 A chave do DataJud é pública e publicada pelo CNJ, mas pode mudar a qualquer
 momento. A atual fica em <https://datajud-wiki.cnj.jus.br/api-publica/acesso/>.
 
-Para o modelo local do Q&A, o Ollama precisa escutar além do loopback, senão os
-contêineres não o alcançam:
-
-```bash
-ollama pull qwen3:14b
-sudo mkdir -p /etc/systemd/system/ollama.service.d
-printf '[Service]\nEnvironment="OLLAMA_HOST=0.0.0.0"\n' \
-  | sudo tee /etc/systemd/system/ollama.service.d/override.conf
-sudo systemctl daemon-reload && sudo systemctl restart ollama
-```
-
-Quem não puder mexer no systemd usa o perfil `ollama-bridge` do compose, e quem
-tiver `nvidia-container-toolkit` pode usar o Ollama em contêiner, no perfil
-`local-llm`.
+O `.env` precisa de uma chave só para os modelos, `OPENROUTER_API_KEY`. Vale pôr
+um limite de crédito nela no painel da OpenRouter, além do `BUDGET_USD_LIMIT`
+que o gateway já aplica.
 
 No n8n, abra `http://localhost:5678` pelo localhost e **crie a conta de dono
 antes de publicar o túnel**. O túnel expõe o editor inteiro junto com o
@@ -495,15 +497,16 @@ No Telegram, envie o PDF do edital ao bot (há um de exemplo em
 comando `/ajuda` explica o que o bot faz e o que ele faz com os dados, e o
 `/apagar` remove os editais e fichas da conversa.
 
-Para trocar de provedor, basta mudar as variáveis de ambiente e recriar o
-contêiner com `docker compose up -d n8n`. O `restart` mantém o ambiente antigo
-e não serve para isso:
+Para trocar o modelo de um estágio, basta pôr outro ID do catálogo da
+OpenRouter no `.env` e recriar o contêiner com `docker compose up -d n8n`. O
+`restart` mantém o ambiente antigo e não serve para isso:
 
 ```bash
-LLM_EXTRACTION_PROVIDER=openai      # deepseek
-LLM_EXTRACTION_MODEL=deepseek-v4-flash
-LLM_QA_PROVIDER=openai              # ollama local
-LLM_QA_MODEL=qwen3:14b
+OPENROUTER_API_KEY=sk-or-...
+LLM_EXTRACTION_MODEL=deepseek/deepseek-v4-flash   # padrão, pode omitir
+LLM_QA_MODEL=deepseek/deepseek-v4-flash           # padrão, pode omitir
+LLM_EXTRACTION_REASONING=minimal
+LLM_QA_REASONING=minimal
 BUDGET_USD_LIMIT=5
 ```
 

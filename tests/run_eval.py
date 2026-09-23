@@ -337,13 +337,19 @@ def eval_live(cases: dict, ficha: dict, base_url: str, model: str,
 
 
 def _ask(base_url: str, model: str, api_key: str, system: str, question: str) -> str:
+    import os
     payload = {
         "model": model,
         "messages": [{"role": "system", "content": system},
                      {"role": "user", "content": question}],
-        "max_tokens": 900,
+        # Folga para o raciocínio: com 900 tokens um modelo que pensa gasta o
+        # orçamento inteiro antes de escrever, e a resposta volta vazia.
+        "max_tokens": 4000,
         "temperature": 0,
     }
+    reasoning = os.getenv("LLM_QA_REASONING", "minimal").strip()
+    if reasoning:
+        payload["reasoning_effort"] = reasoning
     request = urllib.request.Request(
         f"{base_url.rstrip('/')}/v1/chat/completions",
         data=json.dumps(payload).encode(),
@@ -521,11 +527,16 @@ def main() -> int:
 
     if args.live:
         import os
+        # Os mesmos padrões do docker-compose: OpenRouter, com a chave única.
+        api_key = os.getenv("LLM_QA_API_KEY") or os.getenv("OPENROUTER_API_KEY")
+        if not api_key:
+            raise SystemExit("--live precisa de OPENROUTER_API_KEY no ambiente "
+                             "(set -a; . ./.env; set +a)")
         report["live"] = eval_live(
             cases, ficha_clean,
-            os.getenv("LLM_QA_BASE_URL", "http://localhost:11434"),
-            os.getenv("LLM_QA_MODEL", "qwen3:14b"),
-            os.getenv("LLM_QA_API_KEY", "ollama"),
+            os.getenv("LLM_QA_BASE_URL", "https://openrouter.ai/api"),
+            os.getenv("LLM_QA_MODEL", "deepseek/deepseek-v4-flash"),
+            api_key,
         )
 
     text = render(report)
