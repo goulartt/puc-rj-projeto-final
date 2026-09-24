@@ -920,11 +920,16 @@ return [{ json: {
             "workflowId": {"__rl": True, "value": GATEWAY_ID, "mode": "id"},
             "options": {"waitForSubWorkflow": True},
         }),
+        # `continueRegularOutput` como em `Validar ficha`. Correcao que volta sem
+        # JSON manda `document: null`, o servico responde 400 e, sem isto, a
+        # execucao inteira caia — o no seguinte, que ja sabe dizer "a correcao
+        # nao era JSON", nunca rodava, e a pessoa ficava sem resposta. Visto ao
+        # comparar modelos: o qwen3.5-flash derrubou a ingestao assim.
         node("Validar correcao", "n8n-nodes-base.httpRequest", 4.2, [2100, 240], {
             "method": "POST", "url": "={{ $env.DOCLING_URL }}/validate",
             "sendBody": True, "specifyBody": "json",
             "jsonBody": "={{ JSON.stringify({ document: $json.parsed }) }}",
-            "options": {"timeout": 60000}}),
+            "options": {"timeout": 60000}}, onError="continueRegularOutput"),
         node("Conferir correcao", "n8n-nodes-base.code", 2, [2300, 240],
              {"jsCode": INGEST_CHECK_REPAIR}),
         node("Correcao valida?", "n8n-nodes-base.if", 2.2, [2500, 240], {
@@ -2108,6 +2113,60 @@ return [
 """
 
 
+CORPUS_SMOKE_ID = "ingestcorpus0001"
+CORPUS_SMOKE_OUTPUT = ROOT / "tests" / "workflows" / "94-ingest-corpus-smoke.json"
+
+
+def build_corpus_smoke() -> dict:
+    """Roda a extração real sobre um edital que já está no banco.
+
+    Só o edital de exemplo tem PDF no repositório; os outros existem como
+    Markdown em `auction_notices`, e a ingestão aceita Markdown desde que a
+    conversão virou etapa própria. Serve para comparar modelos em mais de um
+    documento — escolher modelo com um edital só já levou a uma recomendação
+    que o primeiro documento diferente desmentiu.
+
+        docker compose exec -e N8N_RUNNERS_BROKER_PORT=5699 \\
+          -e BENCH_NOTICE_ID=29 -e LLM_EXTRACTION_MODEL=<modelo> \\
+          n8n n8n execute --id=ingestcorpus0001
+    """
+    nodes = [
+        node("Disparo manual", "n8n-nodes-base.manualTrigger", 1, [0, 0], {}),
+        node("Ler edital do banco", "n8n-nodes-base.postgres", 2.7, [200, 0], {
+            "operation": "executeQuery",
+            "query": ("SELECT file_name, markdown, deterministic FROM auction_notices "
+                      "WHERE id = $1;"),
+            "options": {"queryReplacement": "={{ [ Number($env.BENCH_NOTICE_ID || 0) ] }}"},
+        }, credentials=POSTGRES_CRED),
+        node("Montar entrada", "n8n-nodes-base.code", 2, [400, 0], {"jsCode": """
+// Grava como `smoke-test`, com hash proprio, para nao colidir com a ficha
+// original do edital nem com a de outro modelo na mesma bateria.
+const row = $input.first().json;
+const lots = ((row.deterministic || {}).multi_lot || {}).lots || [];
+return [{ json: {
+  chat_id: 'smoke-test',
+  file_name: row.file_name,
+  sha256: 'corpus-' + $env.BENCH_NOTICE_ID,
+  markdown: row.markdown,
+  deterministic: row.deterministic,
+  lot: lots.length > 1 ? lots[0] : null,
+} }];
+"""}),
+        node("Chamar ingestao", "n8n-nodes-base.executeWorkflow", 1.3, [600, 0], {
+            "workflowId": {"__rl": True, "value": INGEST_ID, "mode": "id"},
+            "options": {"waitForSubWorkflow": True},
+        }),
+    ]
+    connections = {
+        "Disparo manual": {"main": [[{"node": "Ler edital do banco", "type": "main", "index": 0}]]},
+        "Ler edital do banco": {"main": [[{"node": "Montar entrada", "type": "main", "index": 0}]]},
+        "Montar entrada": {"main": [[{"node": "Chamar ingestao", "type": "main", "index": 0}]]},
+    }
+    return {"id": CORPUS_SMOKE_ID, "name": "94 - Smoke da ingestao sobre o corpus",
+            "nodes": nodes, "connections": connections,
+            "settings": {"executionOrder": "v1"}}
+
+
 CHAT_CHOICE_SMOKE_ID = "chatchoicesmoke01"
 CHAT_CHOICE_SMOKE_OUTPUT = ROOT / "tests" / "workflows" / "95-chat-escolha-smoke.json"
 
@@ -2327,3 +2386,4 @@ if __name__ == "__main__":
     write(CHAT_OUTPUT, build_chat())
     write(CHAT_SMOKE_OUTPUT, build_chat_smoke())
     write(CHAT_CHOICE_SMOKE_OUTPUT, build_chat_choice_smoke())
+    write(CORPUS_SMOKE_OUTPUT, build_corpus_smoke())

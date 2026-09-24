@@ -89,8 +89,12 @@ _MONTH_NAMES = "|".join(_MONTHS)
 #
 # Cada uma das duas últimas custou as datas de praça de um edital inteiro: o
 # extrator devolvia lista vazia e nada sinalizava que havia falhado.
+# `\s*` ao redor das barras: quando a data está numa tabela, o Docling a
+# renderiza como `10 / 08 / 2026`, e a versão colada não casava — um edital
+# inteiro saía sem datas de praça, enquanto três modelos diferentes as liam
+# certo.
 _DATE = re.compile(
-    rf"\b(\d{{1,2}})/(\d{{2}}|{_MONTH_NAMES})/(\d{{4}})\b"
+    rf"\b(\d{{1,2}})\s*/\s*(\d{{2}}|{_MONTH_NAMES})\s*/\s*(\d{{4}})\b"
     rf"|\b(\d{{1,2}})\s+de\s+({_MONTH_NAMES})\s+de\s+(\d{{4}})\b",
     re.IGNORECASE,
 )

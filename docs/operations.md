@@ -114,9 +114,9 @@ relógio está. Medição de 06/08/2026, edital de exemplo:
 |---|---|---|
 | Aviso de recebimento | 0,9 s | — |
 | Conversão do PDF (Docling) | 3,9 s | 2,6% |
-| **Extração da ficha (DeepSeek)** | **147 s** | **97,4%** |
+| **Extração da ficha (Gemma 4 via OpenRouter; era 147 s na DeepSeek)** | **64–174 s** | **~97%** |
 | Consulta processual, tradução, envio | < 0,1 s | ~0% |
-| Pergunta no Q&A (`qwen3:14b` local, configuração anterior) | 13–33 s | — |
+| Pergunta no Q&A (`qwen3.7-flash`, OpenRouter) | 13–26 s | — |
 
 O modelo é o gargalo, e nada mais chega perto: os nós de código, as consultas
 ao Postgres e as chamadas ao serviço de documentos somam menos de 100 ms.
@@ -166,7 +166,7 @@ cara) ou `qa` (por pergunta, barata). Os dois vão à OpenRouter por padrão, co
 
 ```bash
 # outro modelo nas perguntas, ainda pela OpenRouter
-LLM_QA_MODEL=qwen/qwen3-30b-a3b
+LLM_QA_MODEL=google/gemma-4-26b-a4b-it
 
 # extração na Anthropic direto, sem a OpenRouter no meio
 LLM_EXTRACTION_PROVIDER=anthropic

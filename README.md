@@ -29,19 +29,22 @@ matrícula, e um modelo de linguagem de maior capacidade produz uma ficha
 estruturada, validada contra JSON Schema, em que cada campo traz a citação
 literal que o sustenta. No segundo, quando há número de processo válido, a API
 pública DataJud do CNJ fornece os movimentos processuais. No terceiro,
-executado a cada pergunta, um modelo pequeno rodando localmente responde lendo
-apenas a ficha, depois que um filtro determinístico recusa as perguntas fora do
-escopo. Todas as chamadas de modelo passam por um gateway que torna o provedor
-trocável por variável de ambiente e impõe um teto de custo.
+executado a cada pergunta, um modelo pequeno responde lendo apenas a ficha,
+depois que um filtro determinístico recusa as perguntas fora do escopo. Os dois
+modelos são acessados pela OpenRouter e foram escolhidos por medição, entre
+sete candidatos. Todas as chamadas passam por um gateway que torna o modelo
+trocável por variável de ambiente, contabiliza o custo cobrado e impõe um teto
+de gasto.
 
 A avaliação mediu recusa correta de perguntas fora do escopo (10/10), recusa
 indevida de perguntas respondíveis (0/6), acordo entre extratores
 determinísticos e modelo (6/6) e citação verificável na ficha gerada (33/36 no
-edital de exemplo; 140/148 num corpus de cinco editais reais). O processamento
-de cada edital custou US$ 0,004, e as perguntas não custam nada porque o modelo
-roda localmente. Sem o filtro, o prompt de sistema sozinho fez o modelo recusar
-só 1 de 10 perguntas proibidas. Por causa desse resultado, o limite do produto
-passou a ser uma regra de código, aplicada antes de o modelo ser chamado.
+edital de exemplo; 140/148 num corpus de cinco editais reais). Na configuração
+atual, cada edital custa cerca de US$ 0,003 e leva pouco mais de um minuto, e
+cada pergunta custa cerca de US$ 0,0002. Sem o filtro, o prompt de sistema
+sozinho fez um modelo local de 14B recusar só 1 de 10 perguntas proibidas; por
+causa desse resultado, o limite do produto passou a ser uma regra de código,
+aplicada antes de o modelo ser chamado.
 
 ### Abstract
 
@@ -60,19 +63,22 @@ registration, and a stronger language model produces a structured record,
 validated against a JSON Schema, in which every field includes the verbatim
 quote that supports it. In the second, when a valid case number exists, the
 CNJ's public DataJud API supplies the procedural history. In the third, run for
-every question, a small locally hosted model answers by reading only the
-structured record, after a deterministic filter has refused out-of-scope
-questions. Every model call goes through a gateway that makes the provider
-swappable through environment variables and enforces a spending cap.
+every question, a small model answers by reading only the structured record,
+after a deterministic filter has refused out-of-scope questions. Both models are
+reached through OpenRouter and were chosen by measurement among seven
+candidates. Every call goes through a gateway that makes the model swappable
+through environment variables, records the amount actually charged and enforces
+a spending cap.
 
 The evaluation measured correct refusal of out-of-scope questions (10/10),
 wrongful refusal of answerable questions (0/6), agreement between deterministic
 extractors and the model (6/6) and verifiable citations in the generated record
-(33/36 on the sample notice; 140/148 over a corpus of five real notices). Each
-notice cost US$ 0.004 to process, and questions cost nothing because the model
-runs locally. Without the filter, the system prompt alone made the model refuse
-only 1 of 10 forbidden questions. Because of that result, the product's
-boundary became a code rule applied before the model is called.
+(33/36 on the sample notice; 140/148 over a corpus of five real notices). In
+the current setup each notice costs about US$ 0.003 and takes just over a
+minute, and each question costs about US$ 0.0002. Without the filter, the
+system prompt alone made a local 14B model refuse only 1 of 10 forbidden
+questions; because of that result, the product's boundary became a code rule
+applied before the model is called.
 
 ### 1. Introdução
 
@@ -241,11 +247,11 @@ token espúrio saiu no lugar da abertura, e o raciocínio inteiro, em inglês, f
 entregue como se fosse a resposta. Desde então o gateway corta o texto pela
 marca de fechamento, que apareceu mesmo nesse caso.
 
-A configuração atual usa `deepseek/deepseek-v4-flash` nos dois estágios, com
-`reasoning_effort=minimal`. As versões anteriores do projeto chamavam a API da
-DeepSeek direto na extração e rodavam as perguntas num `qwen3:14b` local via
-Ollama; os resultados da seção 3 indicam em qual configuração cada número foi
-medido.
+A configuração atual usa `google/gemma-4-26b-a4b-it` na extração e
+`qwen/qwen3.7-flash` nas perguntas, os dois com `reasoning_effort=minimal`
+(seção 3.7). As versões anteriores do projeto chamavam a API da DeepSeek direto
+na extração e rodavam as perguntas num `qwen3:14b` local via Ollama; os
+resultados da seção 3 indicam em qual configuração cada número foi medido.
 
 #### 2.6 Privacidade
 
@@ -314,8 +320,9 @@ pode fazer perguntas:
 
 #### 3.2 Suíte de avaliação
 
-Medidas sobre o edital de exemplo e a ficha gerada pelo pipeline
-(`python3 tests/run_eval.py --live`, relatório em
+Medidas sobre o edital de exemplo e a ficha gerada pelo pipeline, na
+configuração anterior (extração pela DeepSeek direta, perguntas no `qwen3:14b`
+local) (`python3 tests/run_eval.py --live`, relatório em
 [`docs/evidence/2026-08-06-avaliacao.md`](docs/evidence/2026-08-06-avaliacao.md)):
 
 | Medida | Resultado |
@@ -325,16 +332,16 @@ Medidas sobre o edital de exemplo e a ficha gerada pelo pipeline
 | Extração e validação de número CNJ | 3/3 |
 | Acordo determinístico × modelo | 6/6 |
 | Citação verificável na ficha gerada | 33/36 (92%) |
-| Custo por edital | US$ 0,004 |
-| Custo por pergunta | US$ 0 (modelo local) |
+| Custo por edital | US$ 0,004 (hoje, ~US$ 0,003) |
+| Custo por pergunta | US$ 0 no modelo local (hoje, ~US$ 0,0002) |
 
 As duas medidas de recusa precisam ser lidas juntas, porque um filtro que
 recusasse tudo tiraria 10/10 na primeira e deixaria o produto inútil.
 
 #### 3.3 Corpus de editais reais
 
-As medidas de citação e de acordo foram repetidas em todos os editais que o
-pipeline já processou, a partir do Markdown e da ficha gravados no banco, que
+As medidas de citação e de acordo foram repetidas, na configuração anterior,
+em todos os editais que o pipeline já processou, a partir do Markdown e da ficha gravados no banco, que
 são o que a pessoa recebeu
 ([`docs/evidence/2026-08-07-avaliacao-corpus.md`](docs/evidence/2026-08-07-avaliacao-corpus.md)):
 
@@ -363,6 +370,11 @@ Depois dessa medida, o limite do produto passou para
 `services/extractors/scope.py`, que roda antes de qualquer chamada de modelo, e
 o prompt ficou como segunda camada.
 
+O modelo daquela medida era o `qwen3:14b` local. Repetida em setembro com os
+modelos atuais, pela OpenRouter, a mesma bateria teve 9 de 10 recusas só com o
+prompt. A segunda camada deixou de ser decorativa, mas uma pergunta ainda passa,
+e o filtro continua sendo o que garante o limite.
+
 #### 3.5 O efeito das âncoras determinísticas
 
 Com valores, datas e matrícula entregues ao modelo como referência, a taxa de
@@ -372,25 +384,63 @@ são de texto corrido, sem número que sirva de âncora.
 
 #### 3.6 Tempo e custo
 
-| Etapa | Tempo |
-|---|---|
-| Conversão do PDF (Docling) | 3,9 s |
-| Extração da ficha, raciocínio padrão | ~147 s |
-| Extração da ficha, `reasoning_effort=minimal` | ~110 s |
-| Pergunta no Q&A (`qwen3:14b` local) | 13 a 33 s |
+| Etapa | Tempo | Custo |
+|---|---|---|
+| Conversão do PDF (Docling) | 3,9 s | — |
+| Extração, `gemma-4-26b` via OpenRouter (atual) | 64 a 174 s | US$ 0,003 a 0,004 |
+| Pergunta, `qwen3.7-flash` via OpenRouter (atual) | 13 a 26 s | ~US$ 0,0002 |
+| Extração, DeepSeek direta, raciocínio padrão | ~147 s | US$ 0,005 |
+| Extração, DeepSeek direta, `minimal` | ~110 s | US$ 0,004 |
+| Pergunta, `qwen3:14b` local | 13 a 33 s | US$ 0 |
 
-A chamada ao modelo de extração ocupa 97% do tempo total. Fora ela e a
+O custo gravado é o que a OpenRouter informa ter cobrado em cada chamada. A
+chamada ao modelo de extração ocupa 97% do tempo total. Fora ela e a
 conversão do Docling, os nós de código e as consultas ao banco somam menos de
 100 ms. Com o raciocínio desligado, a extração ficou cinco vezes mais rápida,
 mas só 1 de 3 execuções produziu ficha válida. Por isso a configuração adotada
 é `minimal`
 ([`docs/evidence/2026-08-06-tempo-de-extracao.md`](docs/evidence/2026-08-06-tempo-de-extracao.md)).
+Nas perguntas vale o mesmo: sem raciocínio a resposta sai de 2 a 5 vezes mais
+rápida e erra um terço das perguntas sobre o edital.
+
+#### 3.7 Escolha de modelo
+
+Sete modelos do catálogo da OpenRouter passaram pela extração real, com o
+mesmo prompt, schema, validação e passo de correção. Os três melhores rodaram
+de novo em dois editais
+([`docs/evidence/2026-09-23-comparacao-de-modelos.md`](docs/evidence/2026-09-23-comparacao-de-modelos.md)):
+
+| Modelo | Válida de primeira | Citação | Tempo | Custo/edital |
+|---|---|---|---|---|
+| `google/gemma-4-26b-a4b-it` | 4/4 | 121/122 (99%) | 82–174 s | US$ 0,003–0,004 |
+| `qwen/qwen3.7-flash` | 1/4 | 111/128 (87%) | 203–236 s | US$ 0,002–0,003 |
+| `deepseek/deepseek-v4-flash` | 2/3 | 88/101 (87%) | 144–425 s | US$ 0,005–0,012 |
+
+Outros quatro ficaram pelo caminho: `gpt-oss-20b` omitiu metade dos blocos da
+ficha, `qwen3.5-flash` devolveu uma correção sem JSON, e `mimo-v2.6-flash` e
+`nemotron-3-nano` ficaram abaixo de 70% de citação.
+
+O Gemma 4 26B-A4B ativa cerca de 4B de parâmetros por token, e ficou com a
+extração. Nas perguntas, o `qwen3.7-flash` acertou 6 de 6 sobre o edital e o
+Gemma, 5 de 6; a diferença é de uma questão e está dentro do ruído.
+
+O `deepseek-v4-flash`, que era o modelo do projeto, piorou ao passar pela
+OpenRouter: na API direta extraía em ~110 s, e por ela variou entre 144 e
+425 s. O catálogo mostra 15 provedores terceiros para ele, parte com
+quantização FP8 ou FP4, sem a própria DeepSeek entre eles, e o roteamento
+padrão prioriza preço.
+
+A comparação também achou dois defeitos no projeto: a correção de ficha
+derrubava a execução quando voltava sem JSON, e o extrator não lia datas de
+praça dentro de tabela, que o Docling renderiza como `10 / 08 / 2026`.
 
 ### 4. Conclusões
 
-Ler o documento uma vez, com um modelo forte, e responder às perguntas com um
-modelo pequeno sobre uma ficha curta deixou o custo por pergunta em zero e
-permitiu rodar o Q&A localmente. A citação obrigatória por campo tornou
+Ler o documento uma vez e responder às perguntas sobre uma ficha curta deixou
+cada pergunta em cerca de US$ 0,0002 e permitiu usar um modelo pequeno nelas.
+Pela OpenRouter, trocar de modelo passou a ser trocar uma variável, e isso
+tornou barato escolher por medição: o modelo que o projeto usava acabou em
+terceiro. A citação obrigatória por campo tornou
 verificável por máquina a principal promessa do projeto, a de que toda
 afirmação mostra de onde veio.
 
@@ -412,6 +462,10 @@ Limites conhecidos:
   assistente sinaliza risco procedimental e não conclui nada sobre o mérito.
 - Cada conversa trabalha com um edital por vez, e a ficha carregada é sempre a
   mais recente.
+- Os modelos dependem da OpenRouter e dos provedores que ela escolhe por trás,
+  e o desempenho do mesmo modelo varia com essa escolha.
+- A escolha de modelo usou dois editais e de 3 a 4 execuções por modelo, o
+  bastante para descartar candidatos e pouco para afirmar taxas.
 - Na ficha do edital de exemplo, três das 36 citações ainda são paráfrase. Elas
   estão listadas no relatório de avaliação.
 
@@ -437,6 +491,8 @@ e avaliar as respostas contra um gabarito, além da cobertura de termos.
 13. DEEPSEEK. DeepSeek API Docs. Disponível em: <https://api-docs.deepseek.com>.
 14. TELEGRAM. Telegram Bot API. Disponível em: <https://core.telegram.org/bots/api>.
 15. JSON Schema. Disponível em: <https://json-schema.org>.
+16. OPENROUTER. Documentação oficial. Disponível em: <https://openrouter.ai/docs>.
+17. GOOGLE DEEPMIND. Gemma. Disponível em: <https://ai.google.dev/gemma>.
 
 ### 6. Instalação
 

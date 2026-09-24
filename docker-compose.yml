@@ -119,8 +119,12 @@ services:
       # Os dois papéis vão à OpenRouter por padrão, com a mesma chave. Cada
       # variável pode ser sobrescrita no .env — é assim que se troca o modelo
       # de um papel, ou se aponta a extração para a Anthropic direto.
+      #
+      # Modelos escolhidos por medição, não por fama: sete candidatos na
+      # extração real, em dois editais. Ver
+      # docs/evidence/2026-09-23-comparacao-de-modelos.md.
       LLM_EXTRACTION_PROVIDER: ${LLM_EXTRACTION_PROVIDER:-openrouter}
-      LLM_EXTRACTION_MODEL: ${LLM_EXTRACTION_MODEL:-deepseek/deepseek-v4-flash}
+      LLM_EXTRACTION_MODEL: ${LLM_EXTRACTION_MODEL:-google/gemma-4-26b-a4b-it}
       LLM_EXTRACTION_BASE_URL: ${LLM_EXTRACTION_BASE_URL:-https://openrouter.ai/api}
       LLM_EXTRACTION_API_KEY: ${LLM_EXTRACTION_API_KEY:-${OPENROUTER_API_KEY}}
       # schema | json | none — quanto de estrutura o provedor consegue impor.
@@ -132,7 +136,7 @@ services:
       LLM_EXTRACTION_REASONING: ${LLM_EXTRACTION_REASONING:-minimal}
       LLM_QA_REASONING: ${LLM_QA_REASONING:-minimal}
       LLM_QA_PROVIDER: ${LLM_QA_PROVIDER:-openrouter}
-      LLM_QA_MODEL: ${LLM_QA_MODEL:-deepseek/deepseek-v4-flash}
+      LLM_QA_MODEL: ${LLM_QA_MODEL:-qwen/qwen3.7-flash}
       LLM_QA_BASE_URL: ${LLM_QA_BASE_URL:-https://openrouter.ai/api}
       LLM_QA_API_KEY: ${LLM_QA_API_KEY:-${OPENROUTER_API_KEY}}
       BUDGET_USD_LIMIT: ${BUDGET_USD_LIMIT}

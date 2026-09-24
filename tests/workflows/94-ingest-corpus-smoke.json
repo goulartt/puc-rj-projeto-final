@@ -1,0 +1,111 @@
+{
+  "id": "ingestcorpus0001",
+  "name": "94 - Smoke da ingestao sobre o corpus",
+  "nodes": [
+    {
+      "parameters": {},
+      "id": "disparo-manual",
+      "name": "Disparo manual",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT file_name, markdown, deterministic FROM auction_notices WHERE id = $1;",
+        "options": {
+          "queryReplacement": "={{ [ Number($env.BENCH_NOTICE_ID || 0) ] }}"
+        }
+      },
+      "id": "ler-edital-do-banco",
+      "name": "Ler edital do banco",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        200,
+        0
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "leilao-postgres",
+          "name": "Postgres do projeto"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// Grava como `smoke-test`, com hash proprio, para nao colidir com a ficha\n// original do edital nem com a de outro modelo na mesma bateria.\nconst row = $input.first().json;\nconst lots = ((row.deterministic || {}).multi_lot || {}).lots || [];\nreturn [{ json: {\n  chat_id: 'smoke-test',\n  file_name: row.file_name,\n  sha256: 'corpus-' + $env.BENCH_NOTICE_ID,\n  markdown: row.markdown,\n  deterministic: row.deterministic,\n  lot: lots.length > 1 ? lots[0] : null,\n} }];\n"
+      },
+      "id": "montar-entrada",
+      "name": "Montar entrada",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "workflowId": {
+          "__rl": true,
+          "value": "editalingest0001",
+          "mode": "id"
+        },
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "chamar-ingestao",
+      "name": "Chamar ingestao",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1.3,
+      "position": [
+        600,
+        0
+      ]
+    }
+  ],
+  "connections": {
+    "Disparo manual": {
+      "main": [
+        [
+          {
+            "node": "Ler edital do banco",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ler edital do banco": {
+      "main": [
+        [
+          {
+            "node": "Montar entrada",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Montar entrada": {
+      "main": [
+        [
+          {
+            "node": "Chamar ingestao",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  }
+}

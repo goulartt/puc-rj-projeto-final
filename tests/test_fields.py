@@ -125,6 +125,21 @@ def test_data_inteira_por_extenso() -> None:
     assert [d["date"] for d in rounds["second"]] == ["2026-08-28"]
 
 
+def test_data_em_tabela_com_espacos_ao_redor_das_barras() -> None:
+    """O Docling renderiza a data de uma tabela como `10 / 08 / 2026`.
+
+    Visto num edital real: os três modelos comparados leram 10/08 e 20/08, e a
+    regex não achou nada — a âncora determinística sumia justamente no formato
+    mais organizado de edital.
+    """
+    texto = ("| 1ª PRAÇA | DATA | HORÁRIO | |---|---|---| "
+             "| Início | 10 / 08 / 2026 | 11 : 00 horas | "
+             "| Término | 13 / 08 / 2026 | 11 : 00 horas |")
+    rounds = fields.auction_rounds(texto)
+    assert [d["date"] for d in rounds["first"]] == ["2026-08-10", "2026-08-13"]
+    assert rounds["first"][0]["time"] == "11:00"
+
+
 def test_data_invalida_e_descartada() -> None:
     assert fields.dates("prazo de 45/13/2026") == []
 
