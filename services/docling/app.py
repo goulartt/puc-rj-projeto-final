@@ -36,7 +36,7 @@ from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 
 sys.path.insert(0, "/app/lib")
-from extractors import cnj, document, fields, movements, presentation, scope  # noqa: E402
+from extractors import cnj, document, fields, location, movements, presentation, scope  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("docling-service")
@@ -231,14 +231,16 @@ def present(payload: dict = Body(...)) -> JSONResponse:
     # O bloco determinístico traz a contagem de imóveis do documento, que a
     # ficha não tem: ela descreve um lote e não sabe quantos existem.
     deterministic = payload.get("deterministic")
+    loc = payload.get("location")
     view = presentation.present(ficha, case, max_items=max_items,
-                                deterministic=deterministic)
+                                deterministic=deterministic, location=loc)
     # A ficha em português, para o Q&A ler no lugar do JSON com chaves em
     # inglês. Sem isto, o modelo repete a chave na resposta
     # ("extinguished_by_sale: true") ou tenta traduzi-la e inventa.
     return JSONResponse({**view,
                          "ficha_text": presentation.ficha_to_text(ficha),
-                         "case_text": presentation.case_to_text(case)})
+                         "case_text": presentation.case_to_text(case),
+                         "location_text": presentation.location_to_text(loc)})
 
 
 @app.post("/inspect")
@@ -254,6 +256,25 @@ def inspect_document(payload: dict = Body(...)) -> JSONResponse:
         **verdict,
         "message": None if verdict["is_notice"] else document.rejection_message(verdict),
     })
+
+
+@app.post("/location")
+def location_score(payload: dict = Body(...)) -> JSONResponse:
+    """Índice de entorno a partir do endereço do imóvel.
+
+    Chama Nominatim e Overpass, serviços públicos do OpenStreetMap. Falha de
+    rede ou endereço não localizado devolve `found: false` com o motivo, e não
+    erro: a ficha vale sem o entorno, e a ingestão não pode cair por causa dele.
+    """
+    address = (payload.get("address") or "").strip()
+    if not address:
+        return JSONResponse({"found": False, "reason": "edital sem endereço"})
+    try:
+        return JSONResponse(location.evaluate(address))
+    except Exception as erro:  # noqa: BLE001 — serviço externo; a ficha segue sem ele
+        log.warning("entorno indisponivel para %r: %s", address, erro)
+        return JSONResponse({"found": False, "reason": "serviço de mapas indisponível",
+                             "address": address})
 
 
 @app.post("/lot-choice")

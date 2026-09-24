@@ -635,8 +635,53 @@ def _rank_gaps(gaps: list[dict], max_items: int) -> list[dict]:
     return [{k: v for k, v in g.items() if k != "field"} for g in chosen]
 
 
+# ─── Entorno ────────────────────────────────────────────────────────────────
+
+def _metros(m: int) -> str:
+    return f"{m} m" if m < 1000 else f"{m / 1000:.1f} km".replace(".", ",")
+
+
+def location_lines(loc: dict | None) -> list[str]:
+    """A seção "Entorno" da ficha: o índice e o que há perto.
+
+    Descritiva de propósito. Nota baixa não vira ponto de atenção: o
+    OpenStreetMap é irregular fora das capitais, e ausência no mapa não prova
+    ausência na rua. Por isso a linha da fonte diz o que o número é.
+    """
+    if not loc or not loc.get("found"):
+        return []
+    linhas = [f"Índice {loc['score']}/100 — {loc['band']}."]
+    for cat in loc.get("categories") or []:
+        if cat.get("nearest_m") is None:
+            continue
+        nome = f" ({cat['nearest_name']})" if cat.get("nearest_name") else ""
+        linhas.append(f"{cat['label']}: {_metros(cat['nearest_m'])}{nome}")
+    ausentes = [c["label"].lower() for c in loc.get("categories") or []
+                if c.get("nearest_m") is None]
+    if ausentes:
+        linhas.append("Nada mapeado a 1 km: " + ", ".join(ausentes) + ".")
+    if loc.get("precision") == "rua":
+        # Sem o número, o ponto cai no meio da rua: numa avenida longa o
+        # entorno pode ser de outro trecho.
+        linhas.append("O mapa não achou o número, só a rua; as distâncias são "
+                      "aproximadas.")
+    # Atribuição exigida pela licença ODbL dos dados do OpenStreetMap.
+    linhas.append("Distâncias em linha reta. Dados © colaboradores do "
+                  "OpenStreetMap, que pode estar incompleto fora das capitais.")
+    return linhas
+
+
+def location_to_text(loc: dict | None) -> str:
+    """O entorno para o contexto do Q&A, com a fonte e o limite dela."""
+    linhas = location_lines(loc)
+    if not linhas:
+        return ""
+    return "Entorno do imóvel, calculado a partir do OpenStreetMap:\n" + "\n".join(
+        f"  {l}" for l in linhas)
+
+
 def present(ficha: dict, case: dict | None = None, *, max_items: int = 3,
-            deterministic: dict | None = None) -> dict:
+            deterministic: dict | None = None, location: dict | None = None) -> dict:
     """Blocos prontos para exibição, já em português e já priorizados."""
     ficha = ficha or {}
     ranked = rank_risks(ficha.get("risks") or [])
@@ -669,4 +714,5 @@ def present(ficha: dict, case: dict | None = None, *, max_items: int = 3,
         "risks_generic_hidden": len(ranked) - len(specific) if specific else 0,
         "gaps": _rank_gaps(ficha.get("gaps") or [], max_items),
         "highlights": highlights(ficha, case)[:max_items],
+        "location": location_lines(location),
     }

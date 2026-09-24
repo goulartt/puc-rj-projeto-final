@@ -880,6 +880,28 @@ def build_ingest() -> dict:
                         " JSON.stringify($json.analysis), JSON.stringify($json.summary)] }}"},
         }, credentials={"postgres": {"id": "leilao-postgres", "name": "Postgres do projeto"}},
            alwaysOutputData=True, onError="continueRegularOutput"),
+        # Entorno do imovel pelo OpenStreetMap. Vem depois da ficha gravada e
+        # nunca a derruba: endereco nao achado ou mapa fora do ar voltam como
+        # `found: false`, e a ficha segue sem a secao.
+        node("Preparar entorno", "n8n-nodes-base.code", 2, [2560, -110], {"jsCode": """
+let result;
+try { result = $('Conferir correcao').first().json; }
+catch (e) { result = $('Conferir resultado').first().json; }
+const address = (((result.analysis || {}).property || {}).address || {}).value || '';
+return [{ json: { address, notice_id: $('Persistir ficha').first().json.id } }];
+"""}),
+        node("Avaliar entorno", "n8n-nodes-base.httpRequest", 4.2, [2660, -110], {
+            "method": "POST", "url": "={{ $env.DOCLING_URL }}/location",
+            "sendBody": True, "specifyBody": "json",
+            "jsonBody": "={{ JSON.stringify({ address: $json.address }) }}",
+            "options": {"timeout": 90000}}, onError="continueRegularOutput"),
+        node("Registrar entorno", "n8n-nodes-base.postgres", 2.7, [2760, -110], {
+            "operation": "executeQuery",
+            "query": "UPDATE auction_notices SET location = $1 WHERE id = $2;",
+            "options": {"queryReplacement":
+                        "={{ [JSON.stringify($json), $('Preparar entorno').first().json.notice_id] }}"},
+        }, credentials={"postgres": {"id": "leilao-postgres", "name": "Postgres do projeto"}},
+           alwaysOutputData=True, onError="continueRegularOutput"),
         node("Resposta de sucesso", "n8n-nodes-base.code", 2, [2860, -110], {"jsCode": """
 // A ficha ja foi gravada; o id vem do no que a gravou, e nao de `$input`, que
 // aqui pode chegar de tres lugares diferentes conforme houve correcao e houve
@@ -905,6 +927,9 @@ return [{ json: {
   // esta fora da cobertura do DataJud.
   court_case_status: (() => {
     try { return $('Consultar processo').first().json.status; } catch (e) { return null; }
+  })(),
+  location: (() => {
+    try { return $('Avaliar entorno').first().json; } catch (e) { return null; }
   })(),
   chat_id: result.chat_id,
   analysis: result.analysis,
@@ -983,10 +1008,13 @@ return [{ json: { ok: false, problems: r.problems, chat_id: r.chat_id, file_name
         # falha, e a ficha vale igual.
         "Tem processo judicial?": {"main": [
             [{"node": "Consultar processo", "type": "main", "index": 0}],
-            [{"node": "Resposta de sucesso", "type": "main", "index": 0}],
+            [{"node": "Preparar entorno", "type": "main", "index": 0}],
         ]},
         "Consultar processo": {"main": [[{"node": "Registrar consulta", "type": "main", "index": 0}]]},
-        "Registrar consulta": {"main": [[{"node": "Resposta de sucesso", "type": "main", "index": 0}]]},
+        "Registrar consulta": {"main": [[{"node": "Preparar entorno", "type": "main", "index": 0}]]},
+        "Preparar entorno": {"main": [[{"node": "Avaliar entorno", "type": "main", "index": 0}]]},
+        "Avaliar entorno": {"main": [[{"node": "Registrar entorno", "type": "main", "index": 0}]]},
+        "Registrar entorno": {"main": [[{"node": "Resposta de sucesso", "type": "main", "index": 0}]]},
     }
 
     return {
@@ -1578,6 +1606,7 @@ return asked.map((entry) => ({ json: {
   has_notice: Boolean(notice),
   file_name: notice ? notice.file_name : null,
   analysis: notice ? notice.analysis : null,
+  location: notice ? notice.location : null,
 } }));
 """
 
@@ -1592,6 +1621,7 @@ const rendered = $('Ficha em portugues').first().json;
 if (contexts.length) {
   contexts[0].ficha_text = rendered.ficha_text;
   contexts[0].case_text = rendered.case_text;
+  contexts[0].location_text = rendered.location_text;
 }
 
 const parts = [systemPrompt, '', '# GLOSSARIO', glossary];
@@ -1606,6 +1636,12 @@ if (contexts.length && contexts[0].has_notice) {
   if (contexts[0].case_text) {
     parts.push('', '# SITUACAO PROCESSUAL (consulta ao DataJud)',
                contexts[0].case_text);
+  }
+  // Terceira fonte, tambem separada: o que ha perto do imovel no mapa. Vem com
+  // o proprio limite escrito, para a resposta nao tratar ausencia no mapa como
+  // ausencia na rua.
+  if (contexts[0].location_text) {
+    parts.push('', '# ENTORNO (OpenStreetMap)', contexts[0].location_text);
   }
 } else {
   parts.push('', '# SEM EDITAL CARREGADO',
@@ -1766,6 +1802,13 @@ if ((view.risks || []).length) {
 if ((view.gaps || []).length) {
   out.push(bold('O que o edital NÃO informa'));
   view.gaps.forEach((g) => out.push('• ' + bold(g.label) + ' — ' + esc(g.why_it_matters)));
+  out.push('');
+}
+// Entorno por ultimo: e contexto, nao conclusao sobre o edital, e nao disputa
+// espaco com prazos e riscos.
+if ((view.location || []).length) {
+  out.push(bold('Entorno (a pé)'));
+  view.location.forEach((l, i) => out.push(i === 0 ? esc(l) : '• ' + esc(l)));
   out.push('');
 }
 out.push('Pergunte o que quiser sobre este edital. Não sou advogado e não digo se',
@@ -1942,6 +1985,7 @@ def build_chat() -> dict:
                          "ficha: ($('Chamar ingestao').first().json.analysis || {}), "
                          "deterministic: ($('Chamar ingestao').first().json.deterministic "
                          "|| null), "
+                         "location: ($('Chamar ingestao').first().json.location || null), "
                          "case: ($json.case_analysis || null) }) }}"),
             "options": {"timeout": 30000}}),
         node("Resposta da ficha", "n8n-nodes-base.code", 2, [1280, -320],
@@ -1950,7 +1994,7 @@ def build_chat() -> dict:
         # ── pergunta ──
         node("Carregar ficha do chat", "n8n-nodes-base.postgres", 2.7, [660, -120], {
             "operation": "executeQuery",
-            "query": ("SELECT id, file_name, analysis FROM auction_notices "
+            "query": ("SELECT id, file_name, analysis, location FROM auction_notices "
                       "WHERE chat_id = $1 ORDER BY created_at DESC LIMIT 1;"),
             "options": {"queryReplacement": "={{ [$json.chat_id] }}"},
         }, credentials=POSTGRES_CRED, alwaysOutputData=True),
@@ -1972,6 +2016,7 @@ def build_chat() -> dict:
             "sendBody": True, "specifyBody": "json",
             "jsonBody": ("={{ JSON.stringify({"
                          " ficha: ($('Montar contexto').first().json.analysis || {}),"
+                         " location: ($('Montar contexto').first().json.location || null),"
                          " case: ($json.case_analysis || null) }) }}"),
             "options": {"timeout": 30000}}),
         node("Buscar prompt de Q&A", "n8n-nodes-base.httpRequest", 4.2, [1080, -120], {
@@ -2098,6 +2143,7 @@ return [
     binary: pdf.binary },
   { json: { message: { chat, text: 'Esse imovel esta ocupado?' } } },
   { json: { message: { chat, text: 'O que o processo judicial mostra?' } } },
+  { json: { message: { chat, text: 'Tem mercado e transporte perto do imovel?' } } },
   { json: { message: { chat, text: 'Vale a pena comprar esse imovel?' } } },
   { json: { message: { chat, text: 'O que e comissao do leiloeiro?' } } },
   { json: { message: { chat, text: 'Posso processar o antigo dono?' } } },

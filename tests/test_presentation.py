@@ -272,7 +272,8 @@ def test_present_traduz_as_lacunas() -> None:
 def test_ficha_vazia_nao_quebra() -> None:
     saida = presentation.present({})
     assert saida == {"warning": None, "warning_lots": [], "risks": [],
-                     "risks_generic_hidden": 0, "gaps": [], "highlights": []}
+                     "risks_generic_hidden": 0, "gaps": [], "highlights": [],
+                     "location": []}
 
 
 def test_aviso_de_edital_com_varios_imoveis() -> None:
@@ -371,3 +372,55 @@ def test_omite_detalhe_de_maquina() -> None:
 def test_ficha_vazia_devolve_texto_vazio() -> None:
     assert presentation.ficha_to_text({}) == ""
     assert presentation.ficha_to_text(None) == ""  # type: ignore[arg-type]
+
+
+# ─── Entorno ────────────────────────────────────────────────────────────────
+
+ENTORNO = {
+    "found": True, "score": 89, "precision": "numero",
+    "band": "bem servido — a maior parte do dia a dia fica a pé",
+    "categories": [
+        {"key": "mercado", "label": "Mercado", "count": 22, "nearest_m": 217, "nearest_name": "Dia"},
+        {"key": "trilhos", "label": "Estação de metrô ou trem", "count": 0,
+         "nearest_m": None, "nearest_name": None},
+        {"key": "banco", "label": "Banco", "count": 1, "nearest_m": 1200, "nearest_name": None},
+    ],
+}
+
+
+def test_entorno_mostra_indice_e_o_que_ha_perto() -> None:
+    linhas = presentation.location_lines(ENTORNO)
+    assert linhas[0].startswith("Índice 89/100")
+    assert "Mercado: 217 m (Dia)" in linhas
+    assert "Banco: 1,2 km" in linhas
+
+
+def test_entorno_diz_o_que_nao_esta_mapeado() -> None:
+    """Categoria vazia é dita como "nada mapeado", e não como "não existe"."""
+    linhas = presentation.location_lines(ENTORNO)
+    assert "Nada mapeado a 1 km: estação de metrô ou trem." in linhas
+
+
+def test_entorno_declara_a_fonte_e_o_limite() -> None:
+    assert any("OpenStreetMap" in l and "incompleto" in l
+               for l in presentation.location_lines(ENTORNO))
+
+
+def test_ponto_na_rua_e_nao_no_numero_e_avisado() -> None:
+    linhas = presentation.location_lines({**ENTORNO, "precision": "rua"})
+    assert any("só a rua" in l for l in linhas)
+
+
+def test_sem_entorno_nao_ha_secao() -> None:
+    """Endereço não achado ou mapa fora do ar: silêncio, e não uma nota zero."""
+    assert presentation.location_lines(None) == []
+    assert presentation.location_lines({"found": False, "reason": "x"}) == []
+    assert presentation.location_to_text(None) == ""
+
+
+def test_entorno_nunca_vira_ponto_de_atencao() -> None:
+    """Nota baixa pode ser falta de mapeamento; não é risco do imóvel."""
+    baixo = {**ENTORNO, "score": 12, "band": "quase tudo exige carro"}
+    saida = presentation.present({}, location=baixo)
+    assert saida["risks"] == []
+    assert saida["location"][0].startswith("Índice 12/100")

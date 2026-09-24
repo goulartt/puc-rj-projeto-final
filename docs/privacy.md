@@ -48,6 +48,7 @@ instrui explicitamente a resumir **risco procedimental, não pessoas**.
 | Extratores determinísticos | local | nada |
 | Extração da ficha (Estágio 1) | **OpenRouter** | o texto do edital |
 | Consulta processual | API pública do CNJ | só o número do processo |
+| Entorno do imóvel | Nominatim e Overpass (OpenStreetMap) | só o endereço do imóvel, e as coordenadas dele |
 | Q&A (Estágio 3) | **OpenRouter** | ficha e pergunta, nunca o edital inteiro |
 
 O Estágio 1 é o único que envia o documento a terceiro. Isso é consequência

@@ -262,7 +262,66 @@
     },
     {
       "parameters": {
-        "jsCode": "\n// A ficha ja foi gravada; o id vem do no que a gravou, e nao de `$input`, que\n// aqui pode chegar de tres lugares diferentes conforme houve correcao e houve\n// consulta processual.\nconst saved = $('Persistir ficha').first().json;\n\n// `Persistir ficha` recebe de dois caminhos: a extracao que passou de primeira\n// e a que passou depois de corrigida. Referenciar o no errado devolveria a\n// ficha reprovada. O try existe porque `$()` num no que nao executou lanca.\nlet result;\nlet repaired = false;\ntry {\n  result = $('Conferir correcao').first().json;\n  repaired = true;\n} catch (e) {\n  result = $('Conferir resultado').first().json;\n}\n\nreturn [{ json: {\n  ok: true,\n  notice_id: saved.id,\n  // Consulta processual: `null` quando o leilao e extrajudicial ou o tribunal\n  // esta fora da cobertura do DataJud.\n  court_case_status: (() => {\n    try { return $('Consultar processo').first().json.status; } catch (e) { return null; }\n  })(),\n  chat_id: result.chat_id,\n  analysis: result.analysis,\n  usage: result.usage,\n  // Quando houve correcao, o custo ja soma as duas chamadas.\n  cost_usd: result.cost_usd,\n  repaired,\n} }];\n"
+        "jsCode": "\nlet result;\ntry { result = $('Conferir correcao').first().json; }\ncatch (e) { result = $('Conferir resultado').first().json; }\nconst address = (((result.analysis || {}).property || {}).address || {}).value || '';\nreturn [{ json: { address, notice_id: $('Persistir ficha').first().json.id } }];\n"
+      },
+      "id": "preparar-entorno",
+      "name": "Preparar entorno",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2560,
+        -110
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.DOCLING_URL }}/location",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ address: $json.address }) }}",
+        "options": {
+          "timeout": 90000
+        }
+      },
+      "id": "avaliar-entorno",
+      "name": "Avaliar entorno",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2660,
+        -110
+      ],
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE auction_notices SET location = $1 WHERE id = $2;",
+        "options": {
+          "queryReplacement": "={{ [JSON.stringify($json), $('Preparar entorno').first().json.notice_id] }}"
+        }
+      },
+      "id": "registrar-entorno",
+      "name": "Registrar entorno",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.7,
+      "position": [
+        2760,
+        -110
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "leilao-postgres",
+          "name": "Postgres do projeto"
+        }
+      },
+      "alwaysOutputData": true,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "jsCode": "\n// A ficha ja foi gravada; o id vem do no que a gravou, e nao de `$input`, que\n// aqui pode chegar de tres lugares diferentes conforme houve correcao e houve\n// consulta processual.\nconst saved = $('Persistir ficha').first().json;\n\n// `Persistir ficha` recebe de dois caminhos: a extracao que passou de primeira\n// e a que passou depois de corrigida. Referenciar o no errado devolveria a\n// ficha reprovada. O try existe porque `$()` num no que nao executou lanca.\nlet result;\nlet repaired = false;\ntry {\n  result = $('Conferir correcao').first().json;\n  repaired = true;\n} catch (e) {\n  result = $('Conferir resultado').first().json;\n}\n\nreturn [{ json: {\n  ok: true,\n  notice_id: saved.id,\n  // Consulta processual: `null` quando o leilao e extrajudicial ou o tribunal\n  // esta fora da cobertura do DataJud.\n  court_case_status: (() => {\n    try { return $('Consultar processo').first().json.status; } catch (e) { return null; }\n  })(),\n  location: (() => {\n    try { return $('Avaliar entorno').first().json; } catch (e) { return null; }\n  })(),\n  chat_id: result.chat_id,\n  analysis: result.analysis,\n  usage: result.usage,\n  // Quando houve correcao, o custo ja soma as duas chamadas.\n  cost_usd: result.cost_usd,\n  repaired,\n} }];\n"
       },
       "id": "resposta-de-sucesso",
       "name": "Resposta de sucesso",
@@ -576,7 +635,7 @@
         ],
         [
           {
-            "node": "Resposta de sucesso",
+            "node": "Preparar entorno",
             "type": "main",
             "index": 0
           }
@@ -595,6 +654,39 @@
       ]
     },
     "Registrar consulta": {
+      "main": [
+        [
+          {
+            "node": "Preparar entorno",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Preparar entorno": {
+      "main": [
+        [
+          {
+            "node": "Avaliar entorno",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Avaliar entorno": {
+      "main": [
+        [
+          {
+            "node": "Registrar entorno",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Registrar entorno": {
       "main": [
         [
           {

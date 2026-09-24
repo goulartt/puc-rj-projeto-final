@@ -9,6 +9,9 @@ CREATE TABLE IF NOT EXISTS auction_notices (
     markdown      TEXT        NOT NULL,  -- saída do Docling
     deterministic JSONB       NOT NULL,  -- extratores regex (1a)
     analysis      JSONB       NOT NULL,  -- ficha validada contra o schema (1b)
+    -- Entorno pelo OpenStreetMap: índice, o que há perto e a precisão do ponto.
+    -- Nulo quando o endereço não foi localizado ou o mapa estava fora do ar.
+    location      JSONB,
     created_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
     -- Reprocessar o mesmo PDF no mesmo chat substitui a ficha em vez de duplicar
     UNIQUE (chat_id, sha256)

@@ -11,6 +11,7 @@ sem editar fluxo nenhum.
 | Serviço de documentos | `http://localhost:5001` | nenhuma (só rede local) |
 | Postgres | `localhost:5434`, base `leilao` | usuário `leilao` |
 | OpenRouter | `https://openrouter.ai/api` | `OPENROUTER_API_KEY` |
+| Nominatim / Overpass | serviços públicos do OpenStreetMap | nenhuma (User-Agent identificado) |
 | Webhook público | valor de `WEBHOOK_URL` no `.env` | — |
 | Bot | [@LeilaoImovelAnaliseBot](https://t.me/LeilaoImovelAnaliseBot) | — |
 
@@ -149,6 +150,24 @@ Os dois avisos saem de marcos reais do processamento — o recebimento e o fim d
 conversão do PDF —, e por isso conseguem dizer algo além de "aguarde". Para um
 aviso genuinamente cronometrado seria preciso um segundo fluxo em Schedule
 Trigger varrendo execuções em andamento, o que não se pagou aqui.
+
+### Entorno sem aparecer na ficha
+
+O cálculo roda depois de a ficha ser gravada e nunca a derruba: endereço não
+localizado ou mapa fora do ar voltam como `found: false`, e a ficha sai sem a
+seção. Para ver o motivo:
+
+```bash
+psql -c "SELECT id, location->>'found', location->>'reason', location->>'precision'
+           FROM auction_notices ORDER BY id DESC LIMIT 5;"
+curl -s -X POST localhost:5001/location -H 'content-type: application/json' \
+  -d '{"address":"Rua X, 10, Cidade/UF"}'
+```
+
+O Nominatim aceita uma requisição por segundo e exige User-Agent que
+identifique a aplicação, e o Overpass público fica sobrecarregado com
+frequência (a instância principal respondeu 504 no primeiro teste). O serviço
+tenta três instâncias do Overpass antes de desistir.
 
 ### Logs dos contêineres
 

@@ -18,7 +18,9 @@ escrito para advogados e costuma descobrir o que aceitou depois de pagar. Este
 trabalho apresenta o Arremata AI, um assistente no Telegram, orquestrado em
 n8n, que recebe o PDF do edital e o explica a um comprador sem formação
 jurídica. Para cada afirmação, o assistente cita o trecho do edital de onde a
-tirou, e também aponta o que o documento deixa de informar. Ele não opina se
+tirou, e também aponta o que o documento deixa de informar. A ficha termina com
+o entorno do imóvel, calculado a partir do OpenStreetMap: um índice de 0 a 100
+e a distância a pé até mercado, transporte, saúde e escola. Ele não opina se
 vale a pena arrematar, não estima valor de mercado e não dá orientação
 jurídica.
 
@@ -53,7 +55,9 @@ lawyers and often learn what they agreed to only after paying. This work
 presents Arremata AI, a Telegram assistant orchestrated with n8n that takes the
 auction notice PDF and explains it to a buyer with no legal training. For every
 statement, the assistant quotes the passage of the notice it came from, and it
-also points out what the document leaves out. It does not advise whether to
+also points out what the document leaves out. The record ends with the
+property's surroundings, computed from OpenStreetMap: a 0–100 index and the
+walking distance to groceries, transit, health care and schools. It does not advise whether to
 buy, does not estimate market value and does not give legal advice.
 
 Processing is split into three stages. In the first, run once per notice,
@@ -211,7 +215,37 @@ edital trata do assunto, e "processo sem sinal de cancelamento" só aparece
 depois da consulta ao DataJud. Sem essa base, o bloco não diz nada sobre o
 ponto.
 
-#### 2.5 Camada de modelo trocável
+#### 2.5 Entorno do imóvel
+
+A ficha termina com o que há perto do imóvel a pé. A ideia vem do Walk Score,
+mas a API dele cobre só Estados Unidos e Canadá, e um endereço brasileiro não
+teria nota mesmo com chave. O projeto calcula um índice próprio, de 0 a 100, a
+partir do OpenStreetMap: o Nominatim converte o endereço da ficha em
+coordenadas, e o Overpass lista os serviços num raio de 1 km.
+
+São oito categorias com peso: mercado (20), ponto de ônibus (15), farmácia ou
+saúde (15), restaurante ou café (15), estação de metrô ou trem (10), escola
+(10), parque ou academia (10) e banco (5). Cada ocorrência vale inteira até
+400 m, que são cinco minutos a pé, e perde valor em linha reta até zerar em
+1 km; a segunda ocorrência de uma categoria vale menos que a primeira. O método
+está em `services/extractors/location.py`, e o nome "índice de entorno" evita a
+marca do Walk Score, que usa outro cálculo.
+
+A mensagem mostra o índice e, para cada categoria, a distância até o mais
+próximo, porque "mercado a 217 m" dá para conferir e um número sozinho não.
+Nota baixa nunca aparece como ponto de atenção. O OpenStreetMap é bem mapeado
+nas capitais e irregular no interior, e um bairro sem mercado cadastrado pode
+ter três; por isso a seção diz "nada mapeado a 1 km" em vez de "não há", e
+declara a fonte e o limite dela.
+
+O texto de endereço de edital atrapalha o geocoder. "28º Subdistrito – Jardim
+Paulista" é a circunscrição do cartório, e o imóvel do edital de exemplo fica
+de fato na Vila Olímpia; com esse trecho, o Nominatim não achava nenhum dos
+dois endereços testados. A limpeza tira o vocabulário de cartório e a unidade
+do condomínio, tenta com o número e, sem ele, só com a rua, e avisa quando o
+ponto ficou no nível da rua.
+
+#### 2.6 Camada de modelo trocável
 
 Toda chamada de modelo passa pelo sub-fluxo `00-llm-gateway`. Os dois estágios
 falam com a [OpenRouter](https://openrouter.ai), que dá acesso a centenas de
@@ -253,7 +287,7 @@ A configuração atual usa `google/gemma-4-26b-a4b-it` na extração e
 na extração e rodavam as perguntas num `qwen3:14b` local via Ollama; os
 resultados da seção 3 indicam em qual configuração cada número foi medido.
 
-#### 2.6 Privacidade
+#### 2.7 Privacidade
 
 O CPF do executado consta do edital público, mas o sistema não o grava nem o
 envia a provedor: o Markdown é mascarado na conversão, que é por onde o
@@ -262,13 +296,15 @@ ficha também não tem campo para nome ou CPF de executado, e o
 `additionalProperties: false` do schema rejeitaria a ficha se o modelo
 tentasse incluí-los.
 
-O Estágio 1 é o único que envia o documento a terceiro. As perguntas seguintes
+O Estágio 1 é o único que envia o documento a terceiro. O endereço do imóvel,
+que é público no edital, vai também aos servidores do OpenStreetMap para o
+cálculo do entorno. As perguntas seguintes
 trafegam só a ficha, e o `chat_id` nunca vai a provedor de modelo. O projeto
 não raspa portais de tribunal (e-SAJ, PJe) e usa o DataJud, a API pública do
 CNJ. Quando o processo está fora da cobertura do DataJud, o assistente informa
 isso.
 
-#### 2.7 Implementação
+#### 2.8 Implementação
 
 | Componente | Papel |
 |---|---|
@@ -276,6 +312,7 @@ isso.
 | `docling` | PDF → Markdown, com OCR opcional (`rapidocr`) |
 | `postgres` | fichas, consultas processuais, custo por chamada |
 | `cloudflared` | URL HTTPS pública para o webhook do Telegram |
+| Nominatim e Overpass (externos) | endereço → coordenadas → serviços a 1 km |
 | OpenRouter (externo) | os dois modelos, com uma chave só |
 
 | Fluxo | Papel |
@@ -493,6 +530,10 @@ e avaliar as respostas contra um gabarito, além da cobertura de termos.
 15. JSON Schema. Disponível em: <https://json-schema.org>.
 16. OPENROUTER. Documentação oficial. Disponível em: <https://openrouter.ai/docs>.
 17. GOOGLE DEEPMIND. Gemma. Disponível em: <https://ai.google.dev/gemma>.
+18. OPENSTREETMAP CONTRIBUTORS. OpenStreetMap. Dados sob licença ODbL. Disponível em: <https://www.openstreetmap.org>.
+19. NOMINATIM. Documentação e política de uso. Disponível em: <https://nominatim.org>.
+20. OVERPASS API. Disponível em: <https://wiki.openstreetmap.org/wiki/Overpass_API>.
+21. WALK SCORE. Walk Score API. Disponível em: <https://www.walkscore.com/professional/api.php>.
 
 ### 6. Instalação
 
