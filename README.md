@@ -197,6 +197,22 @@ de correção.
 
 #### 2.4 Conversa e escopo
 
+Antes da extração, o assistente confirma qual imóvel a pessoa quer analisar.
+Num edital de um imóvel, mostra o que encontrou e pede um "sim". Num edital de
+poucos imóveis, lista todos. Nos catálogos da Caixa, que chegam a centenas de
+imóveis em tabela, a lista não cabe numa mensagem, e a pessoa aponta o imóvel
+pelo item, pela matrícula, pelo número do bem ou por parte do endereço; quando
+a resposta casa com mais de um (há "Jardim Paulista" em São Paulo e em Paraíso
+do Tocantins), o assistente lista só os candidatos. Imóvel marcado como
+anulado no edital é recusado com aviso, sem gastar extração.
+
+Num catálogo, a extração recebe as regras do leilão e só a linha do imóvel
+escolhido. No de referência, com 482 imóveis, isso levou a entrada de 159 mil
+para 32 mil tokens, o tempo de 355 para 126 s e o custo de US$ 0,018 para
+US$ 0,005. Antes dessa mudança, o catálogo não tinha nenhum imóvel reconhecido
+(a matrícula vinha como "Matrícula: N Ofício: M", fora do padrão esperado), e
+o modelo escolhia sozinho um dos 482.
+
 A pergunta passa primeiro por `services/extractors/scope.py`, um filtro
 determinístico que recusa pedidos de aconselhamento, previsão de valor e
 opinião sobre a compra. O prompt `prompts/qa-system.md` repete o limite como
@@ -497,6 +513,8 @@ Limites conhecidos:
   rebuscada o suficiente passa por ele e encontra só o prompt.
 - O DataJud traz só movimentos processuais, sem peças nem decisões. O
   assistente sinaliza risco procedimental e não conclui nada sobre o mérito.
+- A conversão de um catálogo grande é lenta: o da Caixa, de 750 KB, levou
+  mais de cinco minutos no Docling antes de a pergunta sobre o imóvel chegar.
 - Cada conversa trabalha com um edital por vez, e a ficha carregada é sempre a
   mais recente.
 - Os modelos dependem da OpenRouter e dos provedores que ela escolhe por trás,

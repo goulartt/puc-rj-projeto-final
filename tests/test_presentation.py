@@ -297,7 +297,7 @@ def test_o_aviso_lista_os_imoveis() -> None:
         ]}})
     assert saida["warning_lots"] == [
         "Apartamento — matrícula 81.909 — avaliado em R$ 600.000,00",
-        "Casa — matrícula 9.937 — Londrina/PR",
+        "Casa — Londrina/PR — matrícula 9.937",
     ]
 
 

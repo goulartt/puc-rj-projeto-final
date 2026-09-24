@@ -327,3 +327,91 @@ def test_percentuais_e_areas() -> None:
     texto = "comissão de 5% e lance mínimo de 60% da avaliação; área de 66,02m²"
     assert [p.value for p in fields.percentages(texto)] == [5.0, 60.0]
     assert [a.value for a in fields.areas(texto)] == [66.02]
+
+
+# ─── Catálogo em tabela (Caixa) ─────────────────────────────────────────────
+#
+# Um catálogo real de 482 imóveis não tinha nenhum imóvel reconhecido: a
+# matrícula vem como "Matrícula: N Ofício: M" dentro de uma célula, e o leitor
+# de parágrafo exigia "Registro de Imóveis" depois do número. Com zero lotes o
+# modelo escolheu sozinho um imóvel entre os 482.
+
+CABECALHO_SP = ("| Estado: SP - Cidade: SAO PAULO | Estado: SP - Cidade: SAO PAULO - Empreendimento "
+                "| Estado: SP - Cidade: SAO PAULO - Endereço | Estado: SP - Cidade: SAO PAULO - Bairro "
+                "| Estado: SP - Cidade: SAO PAULO - Descrição | Estado: SP - Cidade: SAO PAULO - Número do bem "
+                "| Estado: SP - Cidade: SAO PAULO - Valor de Venda (R$) | Estado: SP - Cidade: SAO PAULO - Valor de Avaliação (R$) |")
+# O Docling às vezes escorrega o nome da cidade para a coluna seguinte.
+CABECALHO_MG = ("| Estado: MG - Cidade: | Estado: MG - UBERLANDIA Empreendimento | Estado: MG - Endereço "
+                "| Estado: MG - Bairro | Estado: MG - Descrição | Estado: MG - Número do bem "
+                "| Estado: MG - Valor de Venda (R$) | Estado: MG - Valor de Avaliação (R$) |")
+SEPARADOR = "|---|---|---|---|---|---|---|---|"
+
+CATALOGO = "\n".join([
+    "## LICITAÇÃO CAIXA Nº 0031/0326",
+    "O imóvel será vendido no estado em que se encontra.",
+    CABECALHO_SP, SEPARADOR,
+    "| 461 | ED DINAMARCA | 2 HIS 2 ALAMEDA CASA BRANCA N. 438 Apto. 111 | JARDIM PAULISTA "
+    "| Apartamento, 118,7 m2 de área privativa. IPTU: 01009801201 Matrícula: 41437 Ofício: 13. "
+    "| 1444420714491 | 885.117,66 | 1.388.824,42 |",
+    "| 462 | ED OUTRO | RUA AUGUSTA N. 10 | CONSOLACAO | Apartamento, 40 m2. Matrícula: 1437 Ofício: 5. "
+    "| 1444420714492 | 200.000,00 | 300.000,00 |",
+    CABECALHO_MG, SEPARADOR,
+    # Linha partida na quebra de página: a matrícula ficou sozinha na seguinte.
+    "| 147 | | RUA JOSE GARIBALDINO N. 350 | CHACARAS TUBALINA | Casa, 56 m2. IPTU: "
+    "| 8787710822360 | ANULADO | ANULADO |",
+    "| 01082580052001 Matrícula: 135082 Ofício: 1. |",
+])
+
+
+def test_le_os_imoveis_do_catalogo() -> None:
+    lotes = fields.catalog_lots(CATALOGO)
+    assert [l["registry"] for l in lotes] == ["41437", "1437", "135082"]
+    alvo = lotes[0]
+    assert alvo["item"] == "461"
+    assert alvo["kind"] == "Apartamento"
+    assert alvo["city"] == "Sao Paulo/SP"
+    assert alvo["asset_id"] == "1444420714491"
+    assert alvo["minimum_bid"] == 885117.66
+    assert alvo["appraisal"] == 1388824.42
+    assert alvo["annulled"] is False
+
+
+def test_cidade_escorregada_para_outra_coluna() -> None:
+    """Um padrão fixo deixava 21 imóveis do catálogo real sem cidade."""
+    assert fields.catalog_lots(CATALOGO)[2]["city"] == "Uberlandia/MG"
+
+
+def test_linha_partida_na_quebra_de_pagina_e_reconstituida() -> None:
+    lote = fields.catalog_lots(CATALOGO)[2]
+    assert lote["item"] == "147"
+    assert lote["address"] == "RUA JOSE GARIBALDINO N. 350"
+
+
+def test_imovel_anulado_e_marcado() -> None:
+    """"ANULADO" no lugar do valor é o dado mais importante da linha."""
+    lote = fields.catalog_lots(CATALOGO)[2]
+    assert lote["annulled"] is True
+    assert lote["appraisal"] is None
+
+
+def test_foco_mantem_as_regras_e_so_a_linha_escolhida() -> None:
+    """525 mil caracteres viraram 90 mil no catálogo real."""
+    alvo = fields.catalog_lots(CATALOGO)[0]
+    focado = fields.focus_catalog(CATALOGO, alvo)
+    assert "Matrícula: 41437" in focado
+    assert "Matrícula: 1437 " not in focado
+    assert "Matrícula: 135082" not in focado
+    assert "no estado em que se encontra" in focado
+    assert "Estado: MG" not in focado
+
+
+def test_multi_lote_prefere_o_catalogo() -> None:
+    resultado = fields.multi_lot(CATALOGO)
+    assert resultado["catalog"] is True
+    assert resultado["properties"] == 3
+
+
+def test_edital_em_paragrafo_nao_e_catalogo() -> None:
+    texto = "objeto da matrícula nº 106.233 do 4º Cartório de Registro de Imóveis"
+    assert fields.catalog_lots(texto) == []
+    assert fields.multi_lot(texto)["catalog"] is False

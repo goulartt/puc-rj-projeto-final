@@ -49,6 +49,19 @@ def test_unidade_do_condominio_nao_confunde_o_numero() -> None:
     assert p["state"] == "PR"
 
 
+def test_endereco_do_catalogo_da_caixa() -> None:
+    """Código antes do logradouro e número colado na rua, com "N." antes.
+
+    Foi o endereço do imóvel escolhido num catálogo real, e com ele a ficha
+    saía sem entorno: "2 HIS 2" confundia o geocoder e "11 ANDAR" virava o
+    número do prédio.
+    """
+    p = location.address_parts("2 HIS 2 ALAMEDA CASA BRANCA N. 438 Apto. 111, 11 ANDAR "
+                               "VG 22 VG 23, JARDIM PAULISTA, Sao Paulo/SP")
+    assert p == {"street": "ALAMEDA CASA BRANCA", "number": "438",
+                 "city": "Sao Paulo", "state": "SP"}
+
+
 def test_consultas_do_mais_preciso_para_o_menos() -> None:
     consultas = location.geocode_queries("Rua A, nº 10, Campinas/SP")
     assert consultas == [("numero", "Rua A, 10, Campinas, SP"),

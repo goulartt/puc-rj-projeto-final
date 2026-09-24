@@ -374,22 +374,43 @@ def _gap_about(ficha: dict, prefix: str) -> bool:
 
 # ─── Lotes de um edital ─────────────────────────────────────────────────────
 
+def describe_lot(lot: dict) -> str:
+    """Uma linha que deixa a pessoa reconhecer o imóvel.
+
+    No catálogo da Caixa vale mais o endereço e o item que o tipo: "Item 461 —
+    Apartamento — Alameda Casa Branca, 438, apto 111, Jardim Paulista, São
+    Paulo/SP" é o que a pessoa procura no anúncio. Imóvel anulado diz isso
+    primeiro, porque não há o que analisar nele.
+    """
+    partes = []
+    if lot.get("item"):
+        partes.append(f"Item {lot['item']}")
+    partes.append(lot.get("kind") or "Imóvel")
+    if lot.get("address"):
+        local = lot["address"].title()
+        if lot.get("district"):
+            local += f", {lot['district']}"
+        partes.append(local)
+    if lot.get("city"):
+        partes.append(lot["city"])
+    partes.append(f"matrícula {lot['registry']}")
+    if lot.get("annulled"):
+        partes.insert(0, "ANULADO")
+    elif lot.get("minimum_bid") and lot.get("appraisal"):
+        partes.append(f"venda {_brl(lot['minimum_bid'])} (avaliação {_brl(lot['appraisal'])})")
+    elif lot.get("appraisal"):
+        partes.append(f"avaliado em {_brl(lot['appraisal'])}")
+    return " — ".join(partes)
+
+
 def describe_lots(lots: list[dict]) -> list[str]:
     """Uma linha por imóvel, para a pessoa escolher qual quer analisar.
 
-    Montada sem modelo: tipo, matrícula e valor saem de expressão regular sobre
-    o trecho que antecede cada matrícula. Custa zero e sai em segundos, o que é
-    o ponto — a pergunta precisa chegar antes da extração, e não depois dela.
+    Montada sem modelo: tudo sai de expressão regular sobre o documento. Custa
+    zero e sai em segundos, o que é o ponto — a pergunta precisa chegar antes
+    da extração, e não depois dela.
     """
-    linhas = []
-    for lot in lots:
-        partes = [lot.get("kind") or "Imóvel", f"matrícula {lot['registry']}"]
-        if lot.get("appraisal"):
-            partes.append(f"avaliado em {_brl(lot['appraisal'])}")
-        if lot.get("city"):
-            partes.append(lot["city"])
-        linhas.append(" — ".join(partes))
-    return linhas
+    return [describe_lot(lot) for lot in lots]
 
 
 # ─── A ficha como texto em português ────────────────────────────────────────
@@ -612,6 +633,8 @@ def case_to_text(case: dict | None) -> str:
     return "\n".join(linhas)
 
 
+
+
 # ─── Composição ─────────────────────────────────────────────────────────────
 
 def _rank_gaps(gaps: list[dict], max_items: int) -> list[dict]:
@@ -694,15 +717,27 @@ def present(ficha: dict, case: dict | None = None, *, max_items: int = 3,
     warning = None
     warning_lots: list[str] = []
     if lots.get("multi"):
-        warning = (
-            f"Este edital cobre {lots['properties']} imóveis. A ficha abaixo "
-            "descreve apenas um deles:"
-        )
-        # Listar vale mais que contar: com a lista a pessoa reconhece o imóvel
-        # que procura e sabe se a ficha é dele. Só com o número, ela teria de
-        # abrir o PDF para descobrir — que é o trabalho que o produto deveria
-        # estar poupando.
-        warning_lots = describe_lots(lots.get("lots") or [])
+        todos = lots.get("lots") or []
+        if len(todos) <= 12:
+            warning = (
+                f"Este edital cobre {lots['properties']} imóveis. A ficha abaixo "
+                "descreve apenas um deles:"
+            )
+            # Listar vale mais que contar: com a lista a pessoa reconhece o
+            # imóvel que procura e sabe se a ficha é dele.
+            warning_lots = describe_lots(todos)
+        else:
+            # Catálogo: a lista não cabe numa mensagem — 483 linhas empurravam
+            # a ficha inteira para fora do limite do Telegram. Diz qual dos
+            # imóveis a ficha descreve, que é a informação que importa.
+            matricula = str((((ficha.get("property") or {}).get("registry_number")
+                              or {}).get("value")) or "")
+            escolhido = next((l for l in todos
+                              if matricula and re.sub(r"\D", "", str(l.get("registry")))
+                              == re.sub(r"\D", "", matricula)), None)
+            alvo = describe_lot(escolhido) if escolhido else f"matrícula {matricula or '?'}"
+            warning = (f"Este edital é um catálogo com {len(todos)} imóveis. A ficha "
+                       f"abaixo descreve só este: {alvo}.")
 
     return {
         "warning": warning,

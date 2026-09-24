@@ -175,20 +175,22 @@ def extract(payload: dict = Body(...)) -> JSONResponse:
     if not markdown.strip():
         raise HTTPException(status_code=400, detail="markdown vazio")
 
+    return JSONResponse(_deterministic(markdown))
+
+
+def _deterministic(markdown: str) -> dict:
+    """O bloco determinístico, compartilhado por `/extract` e `/focus`."""
     main = cnj.main_case(markdown)
     all_numbers = cnj.extract(markdown)
-
-    return JSONResponse(
-        {
-            **fields.extract_all(markdown),
-            "court_case": main.to_dict() if main else None,
-            # Precedentes citados no juridiquês do edital. Registrados para
-            # auditoria e explicitamente fora da consulta ao DataJud: são
-            # causas alheias ao imóvel.
-            "cited_numbers": [n.number for n in all_numbers if n.role == cnj.ROLE_CITED],
-            "candidates": [n.to_dict() for n in all_numbers],
-        }
-    )
+    return {
+        **fields.extract_all(markdown),
+        "court_case": main.to_dict() if main else None,
+        # Precedentes citados no juridiquês do edital. Registrados para
+        # auditoria e explicitamente fora da consulta ao DataJud: são causas
+        # alheias ao imóvel.
+        "cited_numbers": [n.number for n in all_numbers if n.role == cnj.ROLE_CITED],
+        "candidates": [n.to_dict() for n in all_numbers],
+    }
 
 
 @app.post("/scope")
@@ -288,8 +290,44 @@ def lot_choice(payload: dict = Body(...)) -> JSONResponse:
     # `index` nulo com `understood` verdadeiro é o edital sem matrícula legível:
     # a pessoa confirmou a análise, mas não há lote a apontar.
     chosen = lots[verdict["index"] - 1] if verdict["index"] else None
-    return JSONResponse({**verdict, "lot": chosen,
-                         "options": presentation.describe_lots(lots)})
+    # Num catálogo de 482 imóveis a lista inteira não vai para a conversa: só a
+    # do imóvel escolhido e a dos candidatos, quando a resposta casou com mais
+    # de um.
+    grande = len(lots) > scope.LIST_LIMIT
+    return JSONResponse({
+        **verdict,
+        "lot": chosen,
+        "lot_label": presentation.describe_lot(chosen) if chosen else None,
+        "catalog": grande,
+        "total": len(lots),
+        "options": [] if grande else presentation.describe_lots(lots),
+        "candidate_options": [presentation.describe_lot(lots[i - 1])
+                              for i in verdict.get("candidates") or []],
+    })
+
+
+@app.post("/focus")
+def focus(payload: dict = Body(...)) -> JSONResponse:
+    """O edital recortado no imóvel escolhido, com o bloco determinístico dele.
+
+    Num catálogo, o documento vai à extração sem as linhas dos outros imóveis:
+    no de referência, 525 mil caracteres viraram 90 mil, e a extração deixou de
+    receber 159 mil tokens para escolher sozinha entre 482 imóveis. O bloco
+    determinístico é recalculado sobre o texto recortado; calculado sobre o
+    catálogo, a dica do prompt levaria os valores e as datas de todos os lotes.
+
+    Fora de catálogo, devolve o documento como veio: num edital de poucos
+    imóveis em parágrafos, a parte comum e a de cada lote se misturam, e
+    recortar deixaria a ficha sem prazos.
+    """
+    markdown = payload.get("markdown") or ""
+    lot = payload.get("lot") or {}
+    if lot.get("item") is None or not markdown.strip():
+        return JSONResponse({"markdown": markdown, "focused": False})
+    recortado = fields.focus_catalog(markdown, lot)
+    return JSONResponse({"markdown": recortado, "focused": recortado != markdown,
+                         "deterministic": _deterministic(recortado),
+                         "chars_before": len(markdown), "chars_after": len(recortado)})
 
 
 @app.post("/movements/analyze")

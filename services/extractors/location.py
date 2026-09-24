@@ -165,10 +165,27 @@ def address_parts(address: str) -> dict[str, str | None]:
     s = re.sub(r"\s*[/-]\s*[A-Z]{2}\b", "", s)
     s = re.sub(r"\bCEP\b[^,]*", "", s, flags=re.IGNORECASE)
 
+    # O catálogo da Caixa põe um código antes do logradouro — "2 HIS 2 ALAMEDA
+    # CASA BRANCA N. 438" — que o geocoder não entende. Tudo o que vem antes do
+    # tipo de logradouro sai.
+    tipo = re.search(r"(?i)\b(rua|avenida|av\.|alameda|travessa|estrada|rodovia|"
+                     r"pra[çc]a|largo|viela|servid[ãa]o)\b", s)
+    if tipo and tipo.start() > 0:
+        s = s[tipo.start():]
+
     pedacos = [p.strip(" -–") for p in s.split(",") if p.strip(" -–")]
     rua = pedacos[0] if pedacos else ""
-    numero = next((p for p in pedacos[1:] if re.fullmatch(r"\d+[A-Za-z]?", p)), None)
-    resto = [p for p in pedacos[1:] if p != numero]
+    numero = None
+    # Número colado na rua ("ALAMEDA CASA BRANCA 438", depois de o "N." sair)
+    # vale mais que uma parte solta: "11 ANDAR" vira "11" depois da limpeza e
+    # seria lido como número do prédio.
+    colado = re.match(r"(.*?\D)\s+(\d+[A-Za-z]?)\s*$", rua)
+    if colado:
+        rua, numero = colado.group(1).strip(), colado.group(2)
+    else:
+        numero = next((p for p in pedacos[1:] if re.fullmatch(r"\d+[A-Za-z]?", p)), None)
+    # Partes que são só número (restos de andar, bloco, vaga) não são cidade.
+    resto = [p for p in pedacos[1:] if p != numero and not re.fullmatch(r"[\d\s]+", p)]
     cidade = resto[-1] if resto else None
     return {"street": rua or None, "number": numero, "city": cidade, "state": uf}
 

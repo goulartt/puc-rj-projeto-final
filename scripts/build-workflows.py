@@ -1421,7 +1421,7 @@ return $('Aplicar escopo').all().map((entry) => {
 });
 """
 
-CHAT_ASK_LOT = CHAT_FORMAT_HELPERS + """
+CHAT_ASK_LOT = CHAT_FORMAT_HELPERS + r"""
 // A pergunta que evita analisar o imovel errado.
 //
 // Confirmar tambem quando ha um imovel so e decisao de produto: alem de
@@ -1445,7 +1445,31 @@ const lots = prepared.lots || [];
 const NL = String.fromCharCode(10);
 const linhas = [];
 
-if (lots.length > 1) {
+if (described.catalog) {
+  // Catalogo: a lista nao cabe numa mensagem (482 imoveis no de referencia).
+  // A pessoa ja sabe qual imovel quer — viu no site do leilao —, entao basta
+  // dizer como aponta-lo.
+  const cidades = new Set(lots.map((l) => l.city).filter(Boolean)).size;
+  const anulados = lots.filter((l) => l.annulled).length;
+  linhas.push(bold('Este edital é um catálogo com ' + lots.length + ' imóveis') +
+              (cidades > 1 ? ' em ' + cidades + ' cidades' : '') + '.', '',
+              'Qual deles você quer analisar? Pode me mandar:');
+  // Exemplos tirados do proprio catalogo. Fixos no codigo, eles apontavam
+  // sempre o mesmo imovel, que nem existe em outro edital.
+  const ex = lots.find((l) => !l.annulled && l.item && l.registry && l.address) || lots[0] || {};
+  const rua = String(ex.address || '').replace(/\s+N\.\s*/i, ' ').split(',')[0]
+    .replace(/\s+apto\.?.*$/i, '')
+    .replace(/^.*?\b(RUA|AVENIDA|ALAMEDA|TRAVESSA|ESTRADA|RODOVIA)\b/i, '$1')
+    .toLowerCase().replace(/\b\w/g, (c) => c.toUpperCase());
+  linhas.push('• o número do item' + (ex.item ? ', ex.: ' + bold('item ' + ex.item) : ''),
+              '• a matrícula' + (ex.registry ? ', ex.: ' + bold('matrícula ' + ex.registry) : ''),
+              '• o número do bem na Caixa',
+              '• ou parte do endereço' + (rua ? ', ex.: ' + bold(esc(rua)) : ''));
+  if (anulados) {
+    linhas.push('', anulados + (anulados === 1 ? ' imóvel está' : ' imóveis estão') +
+                ' marcado' + (anulados === 1 ? '' : 's') + ' como ANULADO no edital.');
+  }
+} else if (lots.length > 1) {
   linhas.push(bold('Este edital cobre ' + lots.length + ' imóveis.') +
               ' Qual deles você quer analisar?', '');
   options.forEach((o, i) => linhas.push((i + 1) + '. ' + esc(o)));
@@ -1474,6 +1498,33 @@ const routed = $('Resolver pendente').all()
 const pending = routed.pending;
 const NL = String.fromCharCode(10);
 
+// Catalogo: a resposta pode casar com varios imoveis ("Jardim Paulista" esta
+// em Sao Paulo e em Paraiso do Tocantins), com muitos, ou com nenhum. Cada caso
+// pede uma frase diferente, e nenhum deles adivinha.
+if (!verdict.understood && verdict.catalog) {
+  let pedido;
+  if (verdict.reason === 'varios') {
+    pedido = 'Achei ' + verdict.candidate_options.length + ' imóveis com isso:' + NL + NL +
+      verdict.candidate_options.map((o) => '• ' + esc(o)).join(NL) + NL + NL +
+      'Qual deles? Mande o ' + bold('item') + ' ou a ' + bold('matrícula') + '.';
+  } else if (verdict.reason === 'muitos') {
+    pedido = 'Isso casa com ' + verdict.count + ' imóveis do catálogo. Pode ser mais ' +
+      'específico? O item, a matrícula ou a rua com o número resolvem.';
+  } else {
+    pedido = 'Não achei esse imóvel entre os ' + verdict.total + ' do catálogo. Confira o ' +
+      bold('item') + ' ou a ' + bold('matrícula') + ' no anúncio e me mande de novo.';
+  }
+  return [{ json: { proceed: false, chat_id: routed.chat_id, text: pedido } }];
+}
+
+// Imovel retirado do leilao: nao ha o que analisar, e gastar uma extracao
+// nele produziria uma ficha sobre algo que nao esta a venda.
+if (verdict.understood && verdict.lot && verdict.lot.annulled) {
+  return [{ json: { proceed: false, chat_id: routed.chat_id, text:
+    esc(verdict.lot_label) + NL + NL + 'Este imóvel está marcado como ' + bold('ANULADO') +
+    ' no edital: saiu do leilão. Quer analisar outro? Mande o item ou a matrícula.' } }];
+}
+
 if (!verdict.understood) {
   const opcoes = (verdict.options || [])
     .map((o, i) => (i + 1) + '. ' + esc(o)).join(NL);
@@ -1498,7 +1549,7 @@ return [{ json: {
   // Como o imovel foi descrito na pergunta. Repetir isso no aviso deixa a
   // pessoa conferir que a escolha foi entendida — dois minutos depois seria
   // tarde para descobrir que o bot leu outro numero.
-  lot_label: (verdict.options || [])[verdict.index - 1] || null,
+  lot_label: verdict.lot_label || null,
   file_name: pending.file_name,
   sha256: pending.sha256,
   markdown: pending.markdown,
@@ -1695,9 +1746,15 @@ const routed = $input.first().json;
 return [{ json: { chat_id: routed.chat_id, text: [
   'Recebi o edital' + (routed.file_name ? ' — ' + esc(routed.file_name) : '') + '.',
   '',
-  'Estou lendo o documento e montando a ficha. Costuma levar de dois a cinco',
-  'minutos, dependendo do tamanho. Aviso aqui quando terminar; não precisa',
-  'reenviar.',
+  // Primeiro vem a pergunta sobre qual imovel analisar, e so depois a ficha.
+  // O texto antigo prometia a ficha em "dois a cinco minutos", o que deixou de
+  // ser o proximo passo. E catalogo grande demora na leitura: o da Caixa, com
+  // 482 imoveis, levou mais de cinco minutos so para virar texto.
+  'Estou lendo o documento para localizar o imóvel. Depois te pergunto qual',
+  'você quer analisar e monto a ficha dele.',
+  '',
+  'Edital de uma página sai em segundos; catálogo grande, como os da Caixa,',
+  'pode levar alguns minutos. Não precisa reenviar.',
 ].join(String.fromCharCode(10)) } }];
 """
 
@@ -1953,7 +2010,27 @@ def build_chat() -> dict:
         node("Aviso de analise", "n8n-nodes-base.code", 2, [960, 620],
              {"jsCode": CHAT_CHOICE_ACK}),
         _telegram_send("Responder aviso de analise", [1160, 620]),
-        node("Chamar ingestao", "n8n-nodes-base.executeWorkflow", 1.3, [960, 700], {
+        # Recorta o catalogo no imovel escolhido. Fora de catalogo, o servico
+        # devolve o documento intacto. Fica abaixo do aviso de analise no
+        # canvas ([960, 700] contra [960, 620]) para o aviso sair antes.
+        node("Focar no imovel", "n8n-nodes-base.httpRequest", 4.2, [960, 700], {
+            "method": "POST", "url": "={{ $env.DOCLING_URL }}/focus",
+            "sendBody": True, "specifyBody": "json",
+            "jsonBody": ("={{ JSON.stringify({ markdown: $json.markdown,"
+                         " lot: $json.lot }) }}"),
+            "options": {"timeout": 120000}}),
+        node("Montar entrada da extracao", "n8n-nodes-base.code", 2, [1060, 700], {"jsCode": """
+// A escolha com o documento recortado. Sem recorte, segue o que a preparacao
+// guardou.
+const escolha = $('Decidir escolha').first().json;
+const foco = $input.first().json;
+return [{ json: {
+  ...escolha,
+  markdown: foco.focused ? foco.markdown : escolha.markdown,
+  deterministic: foco.focused ? foco.deterministic : escolha.deterministic,
+} }];
+"""}),
+        node("Chamar ingestao", "n8n-nodes-base.executeWorkflow", 1.3, [1160, 700], {
             "workflowId": {"__rl": True, "value": INGEST_ID, "mode": "id"},
             "options": {"waitForSubWorkflow": True},
         }),
@@ -2096,9 +2173,10 @@ def build_chat() -> dict:
                 "Responder pergunta de lote"),
         **chain("Ler escolha", "Decidir escolha", "Entendeu a escolha?"),
         **chain("Aviso de analise", "Responder aviso de analise"),
+        **chain("Focar no imovel", "Montar entrada da extracao", "Chamar ingestao"),
         "Entendeu a escolha?": {"main": [
             [{"node": "Aviso de analise", "type": "main", "index": 0},
-             {"node": "Chamar ingestao", "type": "main", "index": 0}],
+             {"node": "Focar no imovel", "type": "main", "index": 0}],
             [{"node": "Repetir pergunta de lote", "type": "main", "index": 0}],
         ]},
         **chain("Chamar ingestao", "Limpar pendente", "Buscar situacao do processo",
@@ -2139,7 +2217,7 @@ const chat = { id: 'smoke-test' };
 const pdf = $('Ler edital do disco').first();
 return [
   { json: { message: { chat, document: {
-      file_name: 'edital-exemplo.pdf', mime_type: 'application/pdf' } } },
+      file_name: $env.SMOKE_PDF || 'edital-exemplo.pdf', mime_type: 'application/pdf' } } },
     binary: pdf.binary },
   { json: { message: { chat, text: 'Esse imovel esta ocupado?' } } },
   { json: { message: { chat, text: 'O que o processo judicial mostra?' } } },
@@ -2226,7 +2304,8 @@ CHAT_CHOICE_MESSAGES = """
 // turno da confirmacao. Aqui ele nao existe tambem.
 //
 // Exige um edital pendente no banco — rode o 96 antes.
-return [{ json: { message: { chat: { id: 'smoke-test' }, text: 'sim' } } }];
+// SMOKE_CHOICE troca a resposta: num catalogo, "matrícula 41437" em vez de "sim".
+return [{ json: { message: { chat: { id: 'smoke-test' }, text: $env.SMOKE_CHOICE || 'sim' } } }];
 """
 
 
@@ -2261,7 +2340,8 @@ def build_chat_smoke() -> dict:
             nodes.append(node("Disparo manual", "n8n-nodes-base.manualTrigger", 1,
                               [-600, 0], {}))
             nodes.append(node("Ler edital do disco", "n8n-nodes-base.readWriteFile", 1,
-                              [-400, 0], {"fileSelector": "/data/editais/edital-exemplo.pdf",
+                              [-400, 0], {"fileSelector":
+                                          "={{ '/data/editais/' + ($env.SMOKE_PDF || 'edital-exemplo.pdf') }}",
                                           "options": {"dataPropertyName": "data"}}))
             nodes.append(node("Mensagem no Telegram", "n8n-nodes-base.code", 2,
                               [-200, 0], {"jsCode": CHAT_SMOKE_MESSAGES}))

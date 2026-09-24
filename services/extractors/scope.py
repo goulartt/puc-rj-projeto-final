@@ -124,6 +124,96 @@ _ORDINAL_WORDS = {
 }
 
 
+# Acima disto a lista não cabe numa mensagem e a pessoa aponta o imóvel pelo
+# item, pela matrícula, pelo número do bem ou por parte do endereço.
+LIST_LIMIT = 12
+# Até quantos candidatos vale listar para a pessoa escolher.
+CANDIDATES_LIMIT = 10
+
+_STOPWORDS = {
+    "rua", "avenida", "alameda", "travessa", "estrada", "rodovia", "praca",
+    # "casa" e "apartamento" ficam de fora desta lista: o tipo do imóvel entra
+    # no texto comparado, e "casa" também é nome de rua — "Alameda Casa
+    # Branca" sem ela virava qualquer imóvel em Areia Branca.
+    "apto", "numero", "quero", "imovel", "bloco", "lote",
+    "item", "matricula", "bem", "cidade", "bairro", "esse", "este", "aquele",
+    "analisar", "analise", "sobre", "com", "que", "para", "por", "uma", "dos",
+    "das", "del", "sim",
+}
+
+
+def _digits(value: Any) -> str:
+    return re.sub(r"\D", "", str(value or ""))
+
+
+def _numbers(normalized: str) -> set[str]:
+    """Números da resposta, sem pontuação: "81.909" e "81909" são o mesmo."""
+    return {_digits(n) for n in re.findall(r"\d[\d.\-/]*\d|\d", normalized)}
+
+
+def _lot_text(lot: dict) -> str:
+    partes = (lot.get("development"), lot.get("address"), lot.get("district"),
+              lot.get("city"), lot.get("kind"))
+    return _normalize(" ".join(p for p in partes if p))
+
+
+def _parse_catalog_choice(normalized: str, lots: list[dict]) -> dict[str, Any]:
+    """Escolha num catálogo, onde a pessoa não vê a lista.
+
+    Aceita, nesta ordem de precisão: número do bem, matrícula, "item N" e parte
+    do endereço ou do nome do empreendimento. Número solto que casa com o item
+    de um imóvel e a matrícula de outro é ambíguo, e volta como candidatos em
+    vez de ser resolvido no palpite.
+    """
+    numeros = _numbers(normalized)
+    palavras = [w for w in re.findall(r"[a-z]{3,}", normalized) if w not in _STOPWORDS]
+
+    def achou(indices: list[int], motivo: str) -> dict[str, Any] | None:
+        unicos = sorted(set(indices))
+        if len(unicos) == 1:
+            return {"understood": True, "index": unicos[0], "reason": motivo}
+        if 1 < len(unicos) <= CANDIDATES_LIMIT:
+            return {"understood": False, "index": None, "reason": "varios",
+                    "candidates": unicos}
+        if len(unicos) > CANDIDATES_LIMIT:
+            return {"understood": False, "index": None, "reason": "muitos",
+                    "count": len(unicos)}
+        return None
+
+    # Endereço ou empreendimento: todas as palavras e todos os números da
+    # resposta precisam aparecer no imóvel. "Casa Branca 438" exige as três.
+    if palavras:
+        indices = []
+        for i, lot in enumerate(lots, start=1):
+            texto = _lot_text(lot)
+            numeros_texto = _numbers(texto)
+            if all(re.search(rf"\b{w}", texto) for w in palavras) and \
+               all(n in numeros_texto or n == _digits(lot.get("item")) for n in numeros):
+                indices.append(i)
+        resultado = achou(indices, "endereco")
+        if resultado:
+            return resultado
+
+    if not numeros:
+        return {"understood": False, "index": None, "reason": "nao entendi"}
+
+    por_bem = [i for i, l in enumerate(lots, 1) if _digits(l.get("asset_id")) in numeros]
+    if por_bem:
+        return achou(por_bem, "numero do bem")
+
+    pede_item = re.search(r"\b(item|lote)\b", normalized)
+    pede_matricula = re.search(r"\bmatr", normalized)
+    por_matricula = [i for i, l in enumerate(lots, 1) if _digits(l.get("registry")) in numeros]
+    por_item = [i for i, l in enumerate(lots, 1) if _digits(l.get("item")) in numeros]
+
+    if pede_matricula and por_matricula:
+        return achou(por_matricula, "matricula")
+    if pede_item and por_item:
+        return achou(por_item, "item")
+    return achou(por_matricula + por_item, "matricula ou item") or {
+        "understood": False, "index": None, "reason": "nao encontrado"}
+
+
 def parse_lot_choice(text: str, lots: list[dict]) -> dict[str, Any]:
     """Interpreta a resposta à pergunta "qual imóvel?".
 
@@ -158,14 +248,17 @@ def parse_lot_choice(text: str, lots: list[dict]) -> dict[str, Any]:
         return {"understood": False, "index": None,
                 "reason": "confirmou sem dizer qual"}
 
+    if lots[0].get("item") is not None or total > LIST_LIMIT:
+        return _parse_catalog_choice(normalized, lots)
+
     # Matrícula: mais específica que o número da lista, e por isso vem antes —
-    # "quero a 81.909" traz um número que não é índice.
+    # "quero a 81.909" traz um número que não é índice. Comparação **exata**
+    # por número: a versão anterior procurava os dígitos da matrícula dentro dos
+    # dígitos da resposta, e num catálogo "41437" casaria antes com um imóvel
+    # de matrícula "1437" que viesse primeiro na lista.
+    numeros = _numbers(normalized)
     for position, lot in enumerate(lots, start=1):
-        registry = str(lot.get("registry") or "")
-        if registry and registry in normalized:
-            return {"understood": True, "index": position, "reason": "matricula"}
-        digits = re.sub(r"\D", "", registry)
-        if digits and digits in re.sub(r"\D", "", normalized):
+        if _digits(lot.get("registry")) in numeros:
             return {"understood": True, "index": position, "reason": "matricula"}
 
     for word, value in _ORDINAL_WORDS.items():

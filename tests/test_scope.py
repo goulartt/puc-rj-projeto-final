@@ -195,3 +195,48 @@ def test_sim_sem_lote_algum_e_aceito() -> None:
 def test_sem_lote_algum_ainda_recusa_o_que_nao_e_confirmacao() -> None:
     assert scope.parse_lot_choice("nao", [])["reason"] == "recusou"
     assert scope.parse_lot_choice("sei la", [])["understood"] is False
+
+
+# ─── Escolha num catálogo ───────────────────────────────────────────────────
+
+CATALOGO = [
+    {"item": "461", "registry": "41437", "asset_id": "1444420714491", "kind": "Apartamento",
+     "development": "ED DINAMARCA", "address": "ALAMEDA CASA BRANCA N. 438 Apto. 111",
+     "district": "Jardim Paulista", "city": "Sao Paulo/SP"},
+    {"item": "12", "registry": "1437", "asset_id": "8787700000001", "kind": "Casa",
+     "development": None, "address": "RUA AUGUSTA N. 10", "district": "Consolacao",
+     "city": "Sao Paulo/SP"},
+    {"item": "483", "registry": "4372", "asset_id": "8787700000002", "kind": "Casa",
+     "development": None, "address": "RUA PRINCESA ISABEL N. SN", "district": "Jardim Paulista",
+     "city": "Paraiso Do Tocantins/TO"},
+]
+
+
+def test_matricula_casa_por_igualdade_e_nao_por_trecho() -> None:
+    """"41437" contém "1437". Comparar por trecho escolheria o imóvel errado
+    num catálogo em que a matrícula menor viesse antes na lista."""
+    assert scope.parse_lot_choice("41437", CATALOGO)["index"] == 1
+    assert scope.parse_lot_choice("matrícula 1437", CATALOGO)["index"] == 2
+
+
+def test_item_numero_do_bem_e_endereco() -> None:
+    assert scope.parse_lot_choice("item 461", CATALOGO)["index"] == 1
+    assert scope.parse_lot_choice("1444420714491", CATALOGO)["index"] == 1
+    assert scope.parse_lot_choice("Casa Branca 438", CATALOGO)["index"] == 1
+    assert scope.parse_lot_choice("Ed Dinamarca", CATALOGO)["index"] == 1
+
+
+def test_endereco_ambiguo_devolve_candidatos() -> None:
+    """"Jardim Paulista" existe em São Paulo e em Paraíso do Tocantins."""
+    resultado = scope.parse_lot_choice("Jardim Paulista", CATALOGO)
+    assert resultado["understood"] is False
+    assert resultado["reason"] == "varios"
+    assert resultado["candidates"] == [1, 3]
+
+
+def test_sim_num_catalogo_nao_escolhe_nada() -> None:
+    assert scope.parse_lot_choice("sim", CATALOGO)["understood"] is False
+
+
+def test_imovel_inexistente_nao_e_adivinhado() -> None:
+    assert scope.parse_lot_choice("matrícula 99999", CATALOGO)["reason"] == "nao encontrado"

@@ -315,6 +315,154 @@ _NOT_A_KIND = re.compile(
 )
 
 
+# ─── Catálogo em tabela (Caixa e similares) ─────────────────────────────────
+#
+# Editais de venda em lote da Caixa não descrevem os imóveis em parágrafos: são
+# catálogos com centenas de linhas de tabela, uma por imóvel, agrupadas por
+# cidade. O de referência tinha 483 imóveis em 215 tabelas. Cada linha traz
+# item, empreendimento, endereço, bairro, descrição (com `Matrícula: N
+# Ofício: M`), número do bem, valor de venda e valor de avaliação.
+#
+# O leitor de parágrafo não via nenhum deles: exige "Registro de Imóveis" depois
+# do número, e ali vem "Ofício". Com zero lotes, a conversa pedia um "sim"
+# genérico e o modelo escolhia sozinho um imóvel entre os 483.
+
+_CATALOG_REGISTRY = re.compile(r"Matr[íi]cula:\s*([\d][\d.\-/]*\d|\d)", re.IGNORECASE)
+_HEADER_CELL = re.compile(r"\s*Estado:\s*([A-Z]{2})\s*-?\s*(?:Cidade:)?\s*(.*)")
+_COLUMN_LABEL = re.compile(
+    r"\s*-?\s*(Empreendimento|Endere[çc]o|Bairro|Descri[çc][ãa]o|N[úu]mero do bem|"
+    r"Valor de Venda.*|Valor de Avalia[çc][ãa]o.*)\s*$", re.IGNORECASE)
+
+
+def _header_city(linha: str) -> tuple[str, str] | None:
+    """UF e cidade de um cabeçalho de tabela do catálogo.
+
+    O Docling distribui o nome da cidade de um jeito diferente em cada tabela:
+    "Estado: SP - Cidade: SAO PAULO - Endereço" numa, "Estado: MG - Cidade: |
+    Estado: MG - UBERLANDIA Empreendimento" noutra, com o nome escorregando
+    para a coluna seguinte. Um padrão fixo deixava 21 imóveis sem cidade. Aqui
+    cada célula perde o rótulo da coluna e vence o nome que mais se repete.
+    """
+    uf = None
+    candidatos: dict[str, int] = {}
+    for celula in linha.strip().strip("|").split("|"):
+        m = _HEADER_CELL.match(celula)
+        if not m:
+            continue
+        uf = uf or m.group(1)
+        resto = _COLUMN_LABEL.sub("", m.group(2)).strip(" -")
+        if resto and re.fullmatch(r"[A-ZÀ-Ú][A-ZÀ-Ú' .-]+", resto):
+            candidatos[resto] = candidatos.get(resto, 0) + 1
+    if not uf or not candidatos:
+        return None
+    return uf, max(candidatos, key=candidatos.get)
+
+
+def _money_cell(cell: str) -> float | None:
+    m = re.fullmatch(r"\s*((?:\d{1,3}(?:\.\d{3})*|\d+),\d{2})\s*", cell or "")
+    return float(m.group(1).replace(".", "").replace(",", ".")) if m else None
+
+
+def catalog_lots(text: str) -> list[dict[str, Any]]:
+    """Um lote por linha de tabela que contenha `Matrícula:`.
+
+    As colunas são lidas pela posição relativa à descrição, que é a célula da
+    matrícula: endereço e bairro vêm antes dela, número do bem e valores,
+    depois. Posição relativa, e não absoluta, porque a quebra de página às
+    vezes desloca a tabela e a primeira coluna some.
+
+    A cidade vem do cabeçalho ("Estado: SP - Cidade: SAO PAULO - Endereço") e
+    é herdada pelas linhas seguintes: no documento de referência, 22 linhas
+    tinham perdido o cabeçalho numa quebra de página.
+    """
+    lotes: list[dict[str, Any]] = []
+    cidade = uf = None
+    # Linha de dados sem matrícula: pode ser a primeira metade de uma linha que
+    # a quebra de página partiu. O fragmento seguinte traz só o fim da
+    # descrição — "01082580052001 Matrícula: 57513 Ofício: 1." —, e o resto
+    # do imóvel (item, endereço, valores) ficou aqui.
+    pendente: list[str] | None = None
+    for linha in (text or "").splitlines():
+        if "Estado:" in linha:
+            achado = _header_city(linha)
+            if achado:
+                uf, cidade = achado[0], achado[1].title()
+        if not linha.lstrip().startswith("|"):
+            continue
+        celulas = [c.strip() for c in linha.strip().strip("|").split("|")]
+        if not _CATALOG_REGISTRY.search(linha):
+            if len(celulas) >= 6 and re.fullmatch(r"\d{1,5}", celulas[0]):
+                pendente = celulas
+            continue
+        if len(celulas) < 4 and pendente:
+            # Cola o fragmento na célula da descrição, que é a anterior ao
+            # número do bem.
+            j = next((i for i, c in enumerate(pendente) if re.fullmatch(r"\d{6,}", c)), None)
+            if j is not None and j > 0:
+                celulas = pendente[:j - 1] + [pendente[j - 1] + " " + " ".join(celulas)] + pendente[j:]
+        pendente = None
+        idx = next(i for i, c in enumerate(celulas) if _CATALOG_REGISTRY.search(c))
+        descricao = celulas[idx]
+        pega = lambda i: celulas[i] if 0 <= i < len(celulas) else ""  # noqa: E731
+        item = celulas[0] if re.fullmatch(r"\d{1,5}", celulas[0]) else None
+        numero_bem = pega(idx + 1) if re.fullmatch(r"\d{6,}", pega(idx + 1)) else None
+        tipo = re.match(r"\s*([A-Za-zÀ-ú ]+?)\s*,", descricao)
+        lotes.append({
+            "registry": _CATALOG_REGISTRY.search(descricao).group(1),
+            "item": item,
+            "kind": tipo.group(1).strip().title() if tipo else None,
+            "development": pega(idx - 3) or None,
+            "address": pega(idx - 2) or None,
+            "district": (pega(idx - 1) or "").title() or None,
+            "city": f"{cidade}/{uf}" if cidade else None,
+            "asset_id": numero_bem,
+            "minimum_bid": _money_cell(pega(idx + 2)),
+            "appraisal": _money_cell(pega(idx + 3)),
+            # "ANULADO" no lugar do valor: o imóvel saiu do leilão. Não é dado
+            # faltando, é o dado mais importante da linha.
+            "annulled": "ANULADO" in " ".join(celulas).upper(),
+        })
+    return lotes
+
+
+def focus_catalog(text: str, lot: dict) -> str:
+    """O edital sem as linhas dos outros imóveis do catálogo.
+
+    Mantém tudo que não é tabela — as regras do leilão, que valem para todos
+    os lotes — e só a linha do imóvel escolhido, com um cabeçalho explícito.
+    No catálogo de referência isso reduz 525 mil caracteres a cerca de 90 mil:
+    os cabeçalhos das 215 tabelas, que repetem o nome da cidade em cada coluna,
+    pesavam mais que as próprias regras.
+
+    Mandar o catálogo inteiro custava 159 mil tokens por extração e deixava o
+    modelo escolher entre 483 imóveis o que descrever.
+    """
+    alvo = str(lot.get("registry") or "")
+    escolhida = None
+    saida = []
+    for linha in (text or "").splitlines():
+        if linha.lstrip().startswith("|"):
+            m = _CATALOG_REGISTRY.search(linha)
+            if m and m.group(1) == alvo and escolhida is None:
+                escolhida = linha
+            continue
+        saida.append(linha)
+    if escolhida is None:
+        return text
+    local = " — ".join(x for x in (lot.get("city"),) if x)
+    bloco = [
+        "",
+        f"## IMÓVEL ANALISADO{(' — ' + local) if local else ''}",
+        "",
+        "| Item | Empreendimento | Endereço | Bairro | Descrição | Número do bem "
+        "| Valor de Venda (R$) | Valor de Avaliação (R$) |",
+        "|---|---|---|---|---|---|---|---|",
+        escolhida.strip(),
+        "",
+    ]
+    return "\n".join(saida + bloco)
+
+
 def lots(text: str) -> list[dict[str, Any]]:
     """Um registro por imóvel do edital, na ordem em que aparecem.
 
@@ -391,8 +539,11 @@ def multi_lot(text: str) -> dict[str, Any]:
     Aviso que aparece em todo edital deixa de ser aviso. Perder um caso é pior
     que nada, mas é melhor que treinar a pessoa a ignorar a linha.
     """
-    found = lots(text)
-    return {"properties": len(found), "multi": len(found) > 1, "lots": found}
+    # Catálogo em tabela primeiro: quando existe, é a fonte mais precisa, e o
+    # leitor de parágrafo não vê nenhuma das linhas dele.
+    found = catalog_lots(text) or lots(text)
+    return {"properties": len(found), "multi": len(found) > 1, "lots": found,
+            "catalog": bool(found) and "item" in found[0]}
 
 
 # ─── CPF e CNPJ ─────────────────────────────────────────────────────────────
